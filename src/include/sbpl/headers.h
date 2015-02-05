@@ -53,6 +53,7 @@
 #include <sbpl/planners/adplanner.h>
 #include <sbpl/planners/ANAplanner.h>
 #include <sbpl/planners/araplanner.h>
+#include <sbpl/planners/epaseplanner.h>
 #include <sbpl/planners/planner.h>
 #include <sbpl/planners/ppcpplanner.h>
 #include <sbpl/planners/rstarplanner.h>
