@@ -8,6 +8,7 @@ set(SBPL_PATCH_VERSION 0)
 set(SBPL_VERSION ${SBPL_MAJOR_VERSION}.${SBPL_MINOR_VERSION}.${SBPL_PATCH_VERSION})
 
 set(CMAKE_BUILD_TYPE Release)
+add_definitions(-std=c++0x)
 
 include_directories(src/include)
 

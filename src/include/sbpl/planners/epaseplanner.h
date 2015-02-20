@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <ctime>
 #include <vector>
+#include <map>
 #include <sbpl/planners/planner.h>
 #include <sbpl/utils/mdp.h>
 
@@ -52,7 +53,8 @@
 //---------------------
 #define EPASE_INCONS_LIST_ID 0
 
-class CHeap;
+#define EPASE_NUM_THREADS 4
+
 class CList;
 class DiscreteSpaceInformation;
 class MDPConfig;
@@ -81,6 +83,10 @@ public:
     /**
      * \brief EPA*SE relevant data
      */
+    unsigned int gp;
+    /**
+     * \brief EPA*SE relevant data
+     */
     short unsigned int iterationclosed;
     /**
      * \brief EPA*SE relevant data
@@ -101,7 +107,7 @@ public:
     /**
      * \brief EPA*SE relevant data
      */
-    multimap<int,pARAState*>::const_iterator iter;
+    std::multimap<int,EPASESearchStateData*>::const_iterator iter;
     /**
      * \brief best predecessor and the action from it, used only in forward searches
      */
@@ -119,10 +125,16 @@ public:
 } EPASEState;
 
 class myHeap { 
+  private:
+    std::multimap<int,EPASEState*> open, be;
+    bool* done;
+    DiscreteSpaceInformation* env;
+    double eps;
+    bool usable;
   public:
     myHeap(bool* done_flag, DiscreteSpaceInformation* e);
     void setEps(double e);
-    int bound(const State* const s) const;
+    int bound(const EPASEState* const s) const;
     void clear();
     bool empty() const;
     void initIter(EPASEState* const s) const;
@@ -130,11 +142,11 @@ class myHeap {
     void removeBE(EPASEState* const s);
     int min_value();
     void analyze();
-    EPASEState* remove(unique_lock<mutex>* lock, int* fval, int thread_id);
+    EPASEState* remove(std::unique_lock<std::mutex>* lock, int* fval, int thread_id);
 
     class DualIterator {
       public:
-        multimap<int,EPASEState>::const_iterator a_iter, b_iter;
+        std::multimap<int,EPASEState*>::const_iterator a_iter, b_iter;
         DualIterator(const myHeap& q) : a_iter(q.open.cbegin()), b_iter(q.be.cbegin()) {}
         EPASEState* next() {
           if (a_iter->first < b_iter->first) {
@@ -144,12 +156,6 @@ class myHeap {
           }
         }
     };
-  private:
-    multimap<int,EPASEState*> open, be;
-    bool* done;
-    DiscreteSpaceInformation* env;
-    double eps;
-    bool usable;
 };
 
 /**
@@ -159,7 +165,7 @@ typedef struct EPASESearchStateSpace
 {
     double eps;
     double eps_satisfied;
-    CHeap* heap;
+    myHeap* heap;
     CList* inconslist;
     short unsigned int searchiteration;
     short unsigned int callnumber;
@@ -274,6 +280,8 @@ class EPASEPlanner : public SBPLPlanner
      */
     ~EPASEPlanner();
 
+    virtual void astarThread();
+
     /**
      * \brief returns the initial epsilon
      */
@@ -310,7 +318,7 @@ class EPASEPlanner : public SBPLPlanner
     double repair_time;
     bool use_repair_time;
 
-    vector<PlannerStats> stats;
+    std::vector<PlannerStats> stats;
 
     int num_of_expands_initial_solution;
 
@@ -328,14 +336,14 @@ class EPASEPlanner : public SBPLPlanner
     FILE *fDeb;
 
     // parallel stuff
-    mutex the_mutex;
-    condition_variable worker_cond;
-    condition_variable main_cond;
+    std::mutex the_mutex;
+    std::condition_variable worker_cond;
+    std::condition_variable main_cond;
     bool planner_ok;
     bool iteration_done;
     int sleeping_threads;
     int thread_ids;
-    vector<thread> threads;
+    std::vector<std::thread> threads;
     int improve_path_result;
     int bad_cnt;
 

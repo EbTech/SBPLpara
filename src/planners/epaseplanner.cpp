@@ -40,13 +40,16 @@ using namespace std;
 //Auxiliary functions
 typedef chrono::high_resolution_clock Clock;
 
-double GetTimeStamp() {
+double wA_eps, pA_eps, leeway; // TODO: initialize
+Clock::time_point timeStart;
+
+double GetTimeSince(const Clock::time_point& ts) {
   Clock::time_point t = Clock::now();
-  double t_secs = chrono::duration<double, chrono::seconds::period>(t).count();
-  return t_secs;
+  double td = chrono::duration<double, chrono::seconds::period>(t-ts).count();
+  return td;
 }
 
-inline int bound_back(const State* const sp, const State* const s) {
+inline int bound_back(const EPASEState* const sp, const EPASEState* const s) {
   if (wA_eps <= pA_eps)
     return s->g + sp->iter->first - s->iter->first + leeway;
   else
@@ -65,13 +68,13 @@ void myHeap::setEps(double e){
   eps = e;
 }
 
-int myHeap::bound(const State* const s) const {
+int myHeap::bound(const EPASEState* const s) const {
   myHeap::DualIterator q_it(*this);
-  Cost g_front = s->gp;
-  State* sp = q_it.next();
-  Cost g_back = bound_back(sp, s);
+  int g_front = s->gp;
+  EPASEState* sp = q_it.next();
+  int g_back = bound_back(sp, s);
   while (g_back < s->g && s->g <= g_front) {
-    Cost next_cost = sp->gp + pA_eps*p2pH(sp, s);
+    int next_cost = sp->gp + pA_eps*env->fastHeuristic(sp->id,s->id);
     g_front = min(g_front, next_cost);
     sp = q_it.next();
     g_back = bound_back(sp, s);
@@ -99,7 +102,7 @@ void myHeap::initIter(EPASEState* const s) const {
 void myHeap::insert(EPASEState* const s){
   if (s->iter != open.cend())
     open.erase(s->iter);
-  s->iter = open.insert(pair<int,EPASEState*>(key,s));
+  s->iter = open.insert(pair<int,EPASEState*>(s->g + wA_eps*ComputeHeuristic(s->MDPstate, a), s));
 }
 
 void myHeap::removeBE(EPASEState* const s){
@@ -111,7 +114,7 @@ int myHeap::min_value(){
   return open.begin()->first;
 }
 
-void myHeap::analyze(){or in th
+void myHeap::analyze(){
   printf("queue={\n");
   int cnt = 0;
   for(multimap<int,EPASEState*>::const_iterator it=open.cbegin(); it!=open.cend(); it++){
@@ -159,10 +162,10 @@ void myHeap::analyze(){or in th
     printf("%d,",validV[i]);
   printf("}\n");
   printf("%d parallel states with %d f-val ties\n",int(validV.size()),ties);
-  std::cin.get();
+  //cin.get();
 }
 
-EPASEState* myHeap::remove(unique_lock<mutex>* lock, int* fval, int thread_id){
+EPASEState* myHeap::remove(int& gb, int& fval){
   //analyze();
   
   //loop over open list to find a State we can expand
@@ -172,7 +175,7 @@ EPASEState* myHeap::remove(unique_lock<mutex>* lock, int* fval, int thread_id){
       gb = bound(s);
       if (s->g <= gb) {
         //printf("got a State!");
-        *fval = it->first;
+        fval = it->first;
         open.erase(s->iter);
         s->iter = be.insert(pair<int,pARAState*>(f(s),s));
         /*#ifdef ANYTIME
@@ -189,12 +192,48 @@ EPASEState* myHeap::remove(unique_lock<mutex>* lock, int* fval, int thread_id){
 
 //-------------------------------------------------------------------------------------------
 
-pARAPlanner::pARAPlanner(DiscreteSpaceInformation* environment, bool bSearchForward) :
-  myHeap(&iteration_done, environment), params(0.0) {
+EPASEPlanner::EPASEPlanner(DiscreteSpaceInformation* environment, bool bSearchForward) :
+  heap(&iteration_done, environment), params(0.0) {
   bforwardsearch = bSearchForward;
   environment_ = environment;
   replan_number = 0;
   //reconstructTime = 0.0;
+
+  bsearchuntilfirstsolution = false;
+  finitial_eps = EPASE_DEFAULT_INITIAL_EPS;
+  final_epsilon = EPASE_FINAL_EPS;
+  dec_eps = EPASE_DECREASE_EPS;
+  use_repair_time = false;
+  repair_time = INFINITECOST;
+  searchexpands = 0;
+  MaxMemoryCounter = 0;
+
+#ifndef ROS
+  const char* debug = "debug.txt";
+#endif
+  fDeb = SBPL_FOPEN(debug, "w");
+  if (fDeb == NULL) {
+    SBPL_ERROR("ERROR: could not open planner debug file\n");
+    throw new SBPL_Exception();
+  }
+
+  pSearchStateSpace_ = new EPASESearchStateSpace_t;
+
+  //create the EPASE planner
+  if (CreateSearchStateSpace(pSearchStateSpace_) != 1) {
+    SBPL_ERROR("ERROR: failed to create statespace\n");
+    return;
+  }
+
+  //set the start and goal states
+  if (InitializeSearchStateSpace(pSearchStateSpace_) != 1) {
+    SBPL_ERROR("ERROR: failed to create statespace\n");
+    return;
+  }
+  finitial_eps_planning_time = -1.0;
+  final_eps_planning_time = -1.0;
+  num_of_expands_initial_solution = 0;
+  final_eps = -1.0;
 
   fout = fopen("stats.txt", "w");
   // TODO: push start state
@@ -207,23 +246,30 @@ pARAPlanner::pARAPlanner(DiscreteSpaceInformation* environment, bool bSearchForw
   //vector<pARAState*> being_expanded;
   planner_ok = true;
   thread_ids = 0;
-  for(int i=0; i<NUM_THREADS; i++){
-    threads.push_back(thread(&pARAPlanner::astarThread));
+  for(int i=0; i<EPASE_NUM_THREADS; i++){
+    threads.push_back(thread(&EPASEPlanner::astarThread));
   }
   main_cond.wait(lock);
 }
 
-pARAPlanner::~pARAPlanner() {
+EPASEPlanner::~EPASEPlanner() {
   fclose(fout);
   unique_lock<mutex> lock(the_mutex);
   planner_ok = false;
   worker_cond.notify_all();
   lock.unlock();
-  for(int i=0; i<NUM_THREADS; i++)
+  for(int i=0; i<EPASE_NUM_THREADS; i++)
     threads[i].join();
+
+  if (pSearchStateSpace_ != NULL) {
+    //delete the statespace
+    DeleteSearchStateSpace( pSearchStateSpace_);
+    delete pSearchStateSpace_;
+  }
+  SBPL_FCLOSE( fDeb);
 }
 
-void pARAPlanner::astarThread() {
+void EPASEPlanner::astarThread() {
   unique_lock<mutex> thread_lock(mutex);
   int thread_id = thread_ids;
   thread_ids++;
@@ -242,61 +288,6 @@ void pARAPlanner::astarThread() {
     }
     thread_lock.lock();
   }
-}
-
-//-----------------------------------------------------------------------------------------------------
-
-EPASEPlanner::EPASEPlanner(DiscreteSpaceInformation* environment, bool bSearchForward)
-{
-    bforwardsearch = bSearchForward;
-
-    environment_ = environment;
-
-    bsearchuntilfirstsolution = false;
-    finitial_eps = EPASE_DEFAULT_INITIAL_EPS;
-    final_epsilon = EPASE_FINAL_EPS;
-    dec_eps = EPASE_DECREASE_EPS;
-    use_repair_time = false;
-    repair_time = INFINITECOST;
-    searchexpands = 0;
-    MaxMemoryCounter = 0;
-
-#ifndef ROS
-    const char* debug = "debug.txt";
-#endif
-    fDeb = SBPL_FOPEN(debug, "w");
-    if (fDeb == NULL) {
-        SBPL_ERROR("ERROR: could not open planner debug file\n");
-        throw new SBPL_Exception();
-    }
-
-    pSearchStateSpace_ = new EPASESearchStateSpace_t;
-
-    //create the EPASE planner
-    if (CreateSearchStateSpace(pSearchStateSpace_) != 1) {
-        SBPL_ERROR("ERROR: failed to create statespace\n");
-        return;
-    }
-
-    //set the start and goal states
-    if (InitializeSearchStateSpace(pSearchStateSpace_) != 1) {
-        SBPL_ERROR("ERROR: failed to create statespace\n");
-        return;
-    }
-    finitial_eps_planning_time = -1.0;
-    final_eps_planning_time = -1.0;
-    num_of_expands_initial_solution = 0;
-    final_eps = -1.0;
-}
-
-EPASEPlanner::~EPASEPlanner()
-{
-    if (pSearchStateSpace_ != NULL) {
-        //delete the statespace
-        DeleteSearchStateSpace( pSearchStateSpace_);
-        delete pSearchStateSpace_;
-    }
-    SBPL_FCLOSE( fDeb);
 }
 
 void EPASEPlanner::Initialize_searchinfo(CMDPSTATE* state, EPASESearchStateSpace_t* pSearchStateSpace)
@@ -545,7 +536,7 @@ int EPASEPlanner::GetGVal(int StateID, EPASESearchStateSpace_t* pSearchStateSpac
 //returns 1 if the solution is found, 0 if the solution does not exist and 2 if it ran out of time
 int EPASEPlanner::ImprovePath(EPASESearchStateSpace_t* pSearchStateSpace, double MaxNumofSecs)
 {
-    int expands;
+    int expands, fval, gb;
     EPASEState *state, *searchgoalstate;
     CKey key, minkey;
     CKey goalkey;
@@ -568,15 +559,15 @@ int EPASEPlanner::ImprovePath(EPASESearchStateSpace_t* pSearchStateSpace, double
     //goalkey.key[1] = searchgoalstate->h;
 
     //expand states until done
-    minkey = pSearchStateSpace->heap->getminkeyheap();
+    minkey = pSearchStateSpace->heap.remove(gb, fval);
     CKey oldkey = minkey;
-    while (!pSearchStateSpace->heap->emptyheap() && minkey.key[0] < INFINITECOST && goalkey > minkey &&
-           (clock() - TimeStarted) < MaxNumofSecs * (double)CLOCKS_PER_SEC &&
+    while (!pSearchStateSpace->heap.empty() && minkey.key[0] < INFINITECOST && goalkey > minkey &&
+           GetTimeSince(timeStart) < MaxNumofSecs &&
                (pSearchStateSpace->eps_satisfied == INFINITECOST ||
-               (clock() - TimeStarted) < repair_time * (double)CLOCKS_PER_SEC))
+               GetTimeSince(timeStart) < repair_time ))
     {
 		//get the state
-		state = (EPASEState*)pSearchStateSpace->heap->deleteminheap();
+		state = (EPASEState*)pSearchStateSpace->heap.remove(gb, fval);
 		/* TODO: look at this old epase code:
 		pARAState* state = heap.remove(&lock, &fval,thread_id);
 		if(state==NULL){
@@ -622,6 +613,8 @@ int EPASEPlanner::ImprovePath(EPASESearchStateSpace_t* pSearchStateSpace, double
             throw new SBPL_Exception();
 #endif
         }
+
+        pSearchStateSpace->heap.removeBE(state);
 
         //recompute state value
         state->v = state->g;
@@ -707,7 +700,7 @@ void EPASEPlanner::BuildNewOPENList(EPASESearchStateSpace_t* pSearchStateSpace)
 {
     EPASEState *state;
     CKey key;
-    CHeap* pheap = pSearchStateSpace->heap;
+    myHeap* pheap = pSearchStateSpace->heap;
     CList* pinconslist = pSearchStateSpace->inconslist;
 
     //move incons into open
@@ -729,7 +722,7 @@ void EPASEPlanner::Reevaluatefvals(EPASESearchStateSpace_t* pSearchStateSpace)
 {
     CKey key;
     int i;
-    CHeap* pheap = pSearchStateSpace->heap;
+    myHeap* pheap = pSearchStateSpace->heap;
 
     //recompute priorities for states in OPEN and reorder it
     for (i = 1; i <= pheap->currentsize; ++i) {
@@ -757,9 +750,9 @@ void EPASEPlanner::Reevaluatehvals(EPASESearchStateSpace_t* pSearchStateSpace)
 int EPASEPlanner::CreateSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace)
 {
     //create a heap
-    pSearchStateSpace->heap = new CHeap;
+    pSearchStateSpace->heap = new myHeap;
     pSearchStateSpace->inconslist = new CList;
-    MaxMemoryCounter += sizeof(CHeap);
+    MaxMemoryCounter += sizeof(myHeap);
     MaxMemoryCounter += sizeof(CList);
 
     pSearchStateSpace->searchgoalstate = NULL;
@@ -1139,7 +1132,7 @@ bool EPASEPlanner::Search(EPASESearchStateSpace_t* pSearchStateSpace, vector<int
                         bool bFirstSolution, bool bOptimalSolution, double MaxNumofSecs)
 {
     CKey key;
-    TimeStarted = GetTimeStamp();
+    timeStart = Clock::now();
     searchexpands = 0;
     num_of_expands_initial_solution = -1;
     double old_repair_time = repair_time;
@@ -1174,13 +1167,13 @@ bool EPASEPlanner::Search(EPASESearchStateSpace_t* pSearchStateSpace, vector<int
     //the main loop of EPASE*
     stats.clear();
     int prevexpands = 0;
-    clock_t loop_time;
+    Clock::time_point loop_time;
     while (pSearchStateSpace->eps_satisfied > final_epsilon &&
-           (clock() - TimeStarted) < MaxNumofSecs * (double)CLOCKS_PER_SEC &&
+           GetTimeSince(timeStart) < MaxNumofSecs &&
                (pSearchStateSpace->eps_satisfied == INFINITECOST ||
-               (clock() - TimeStarted) < repair_time * (double)CLOCKS_PER_SEC))
+               GetTimeSince(timeStart) < repair_time ))
     {
-        loop_time = clock();
+        loop_time = Clock::now();
         //decrease eps for all subsequent iterations
         if (fabs(pSearchStateSpace->eps_satisfied - pSearchStateSpace->eps) < ERR_EPS && !bFirstSolution) {
             pSearchStateSpace->eps = pSearchStateSpace->eps - dec_eps;
@@ -1213,10 +1206,10 @@ bool EPASEPlanner::Search(EPASESearchStateSpace_t* pSearchStateSpace, vector<int
         SBPL_PRINTF("eps=%f expands=%d g(searchgoal)=%d time=%.3f\n", pSearchStateSpace->eps_satisfied,
                     searchexpands - prevexpands,
                     ((EPASEState*)pSearchStateSpace->searchgoalstate->PlannerSpecificData)->g,
-                    double(clock() - loop_time) / CLOCKS_PER_SEC);
+                    GetTimeSince(loop_time));
 
         if (pSearchStateSpace->eps_satisfied == finitial_eps && pSearchStateSpace->eps == finitial_eps) {
-            finitial_eps_planning_time = double(clock() - loop_time) / CLOCKS_PER_SEC;
+            finitial_eps_planning_time = GetTimeSince(loop_time);
             num_of_expands_initial_solution = searchexpands - prevexpands;
         }
 
@@ -1224,7 +1217,7 @@ bool EPASEPlanner::Search(EPASESearchStateSpace_t* pSearchStateSpace, vector<int
             PlannerStats tempStat;
             tempStat.eps = pSearchStateSpace->eps_satisfied;
             tempStat.expands = searchexpands - prevexpands;
-            tempStat.time = double(clock() - loop_time) / CLOCKS_PER_SEC;
+            tempStat.time = GetTimeSince(loop_time);
             tempStat.cost = ((EPASEState*)pSearchStateSpace->searchgoalstate->PlannerSpecificData)->g;
             stats.push_back(tempStat);
         }
@@ -1233,7 +1226,7 @@ bool EPASEPlanner::Search(EPASESearchStateSpace_t* pSearchStateSpace, vector<int
         SBPL_FPRINTF(fDeb, "eps=%f expands=%d g(searchgoal)=%d time=%.3f\n", pSearchStateSpace->eps_satisfied,
                      searchexpands - prevexpands,
                      ((EPASEState*)pSearchStateSpace->searchgoalstate->PlannerSpecificData)->g,
-                     double(clock()-loop_time)/CLOCKS_PER_SEC);
+                     GetTimeSince(loop_time));
         PrintSearchState((EPASEState*)pSearchStateSpace->searchgoalstate->PlannerSpecificData, fDeb);
 #endif
         prevexpands = searchexpands;
@@ -1270,8 +1263,8 @@ bool EPASEPlanner::Search(EPASESearchStateSpace_t* pSearchStateSpace, vector<int
     }
 
     SBPL_PRINTF("total expands this call = %d, planning time = %.3f secs, solution cost=%d\n",
-                searchexpands, (clock() - TimeStarted) / ((double)CLOCKS_PER_SEC), solcost);
-    final_eps_planning_time = (clock() - TimeStarted) / ((double)CLOCKS_PER_SEC);
+                searchexpands, GetTimeSince(timeStart), solcost);
+    final_eps_planning_time = GetTimeSince(timeStart);
     final_eps = pSearchStateSpace->eps_satisfied;
     //SBPL_FPRINTF(fStat, "%d %d\n", searchexpands, solcost);
 
@@ -1449,8 +1442,8 @@ void EPASEPlanner::get_search_stats(vector<PlannerStats>* s)
     }
 }
 
-bool pARAPlanner::outOfTime(){
-  double time_used = GetTimeStamp() - TimeStarted;
+/*bool EPASEPlanner::outOfTime(){
+  double time_used = GetTimeSince(timeStart);
   //we are out of time if:
          //we used up the max time limit OR
          //we found some solution and used up the minimum time limit
@@ -1462,4 +1455,4 @@ bool pARAPlanner::outOfTime(){
     printf("used all repair time...\n");
   return time_used >= params.max_time || 
          (use_repair_time && eps_satisfied != INFINITECOST && time_used >= params.repair_time);
-}
+}*/
