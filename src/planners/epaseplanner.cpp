@@ -40,20 +40,12 @@ using namespace std;
 //Auxiliary functions
 typedef chrono::high_resolution_clock Clock;
 
-double wA_eps, pA_eps, leeway; // TODO: initialize
 Clock::time_point timeStart;
 
 double GetTimeSince(const Clock::time_point& ts) {
   Clock::time_point t = Clock::now();
   double td = chrono::duration<double, chrono::seconds::period>(t-ts).count();
   return td;
-}
-
-inline int bound_back(const EPASEState* const sp, const EPASEState* const s) {
-  if (wA_eps <= pA_eps)
-    return s->g + sp->iter->first - s->iter->first + leeway;
-  else
-    return (s->g + sp->iter->first - s->iter->first)*pA_eps/wA_eps + leeway;
 }
 
 
@@ -64,8 +56,21 @@ myHeap::myHeap(bool* done_flag, DiscreteSpaceInformation* e){
   env = e;
 }
 
-void myHeap::setEps(double e){
-  eps = e;
+void myHeap::setEps(double e, double w, int cl) {
+  epsOpt = e;
+  epsBias = w;
+  min_edge_cost = cl;
+  if (epsBias < epsOpt)
+    leeway = (2*epsOpt - epsBias - 1) * min_edge_cost;
+  else
+  	leeway = (epsOpt - 1) * min_edge_cost;
+}
+
+inline int myHeap::bound_back(const EPASEState* const sp, const EPASEState* const s) const {
+  if (epsBias <= epsOpt)
+    return s->g + sp->iter->first - s->iter->first + leeway;
+  else
+    return (s->g + sp->iter->first - s->iter->first)*epsOpt/epsBias + leeway;
 }
 
 int myHeap::bound(const EPASEState* const s) const {
@@ -74,7 +79,7 @@ int myHeap::bound(const EPASEState* const s) const {
   EPASEState* sp = q_it.next();
   int g_back = bound_back(sp, s);
   while (g_back < s->g && s->g <= g_front) {
-    int next_cost = sp->gp + pA_eps*env->GetFromToHeuristic(sp->MDPstate->StateID, s->MDPstate->StateID);
+    int next_cost = sp->gp + epsOpt*env->GetFromToHeuristic(sp->MDPstate->StateID, s->MDPstate->StateID);
     g_front = min(g_front, next_cost);
     sp = q_it.next();
     g_back = bound_back(sp, s);
@@ -103,7 +108,7 @@ void myHeap::insert(EPASEState* const s){
   if (s->iter != open.cend())
     open.erase(s->iter);
   // TODO: compute start instead of goal heuristic if searching backwards
-  s->iter = open.insert(pair<int,EPASEState*>(s->g + wA_eps*env->GetGoalHeuristic(s->MDPstate->StateID), s));
+  s->iter = open.insert(pair<int,EPASEState*>(s->g + epsBias*env->GetGoalHeuristic(s->MDPstate->StateID), s));
 }
 
 void myHeap::removeBE(EPASEState* const s){
@@ -144,10 +149,10 @@ void myHeap::analyze(){
     bool valid = true;
     int cnt2 = 0;
     for(multimap<int,EPASEState*>::const_iterator it2=open.cbegin(); it2!=it; it2++){
-      if(int(it->second->g) - int(it2->second->g) > eps*env->GetFromToHeuristic(it->second->MDPstate->StateID, it2->second->MDPstate->StateID)) {
+      if(int(it->second->g) - int(it2->second->g) > epsOpt*env->GetFromToHeuristic(it->second->MDPstate->StateID, it2->second->MDPstate->StateID)) {
         printf("invalid (%d,%d): %d - %d > %f*%d\n",
                 cnt,cnt2,
-                it->second->g, it2->second->g, eps, 
+                it->second->g, it2->second->g, epsOpt,
                 env->GetFromToHeuristic(it->second->MDPstate->StateID, it2->second->MDPstate->StateID));
         valid = false;
         break;
@@ -178,7 +183,7 @@ EPASEState* myHeap::remove(int& gb, int& fval) {
         //printf("got a State!");
         fval = it->first;
         open.erase(s->iter);
-        int s_key = s->g + (int)(eps * s->h);
+        int s_key = s->g + (int)(epsBias * s->h);
         s->iter = be.insert(pair<int,EPASEState*>(s_key,s));
         /*#ifdef ANYTIME
           closed.push_back(s);
@@ -244,7 +249,7 @@ EPASEPlanner::EPASEPlanner(DiscreteSpaceInformation* environment, bool bSearchFo
   planner_ok = true;
   thread_ids = 0;
   for(int i=0; i<EPASE_NUM_THREADS; i++){
-    threads.push_back(thread(&EPASEPlanner::astarThread));
+    threads.push_back(thread( [=]{astarThread();} ));
   }
   main_cond.wait(lock);
 }
@@ -323,7 +328,7 @@ CMDPSTATE* EPASEPlanner::CreateState(int stateID)
 
     //create search specific info
     state->PlannerSpecificData = (EPASEState*)malloc(sizeof(EPASEState));
-    Initialize_searchinfo(state, pSearchStateSpace);
+    Initialize_searchinfo(state);
     MaxMemoryCounter += sizeof(EPASEState);
 
     return state;
@@ -337,7 +342,7 @@ CMDPSTATE* EPASEPlanner::GetState(int stateID)
     }
 
     if (environment_->StateID2IndexMapping[stateID][EPASEMDP_STATEID2IND] == -1)
-        return CreateState(stateID, pSearchStateSpace);
+        return CreateState(stateID);
     else
         return pSearchStateSpace->searchMDP.StateArray[environment_->StateID2IndexMapping[stateID][EPASEMDP_STATEID2IND]];
 }
@@ -399,7 +404,7 @@ void EPASEPlanner::InitializeSearchStateInfo(EPASEState* state)
     //compute heuristics
 #if USE_HEUR
     if(pSearchStateSpace->searchgoalstate != NULL)
-        state->h = ComputeRootedHeuristic(state->MDPstate, pSearchStateSpace);
+        state->h = ComputeRootedHeuristic(state->MDPstate);
     else
         state->h = 0;
 #else
@@ -427,7 +432,7 @@ void EPASEPlanner::ReInitializeSearchStateInfo(EPASEState* state)
     //compute heuristics
 #if USE_HEUR
     if(pSearchStateSpace->searchgoalstate != NULL)
-        state->h = ComputeRootedHeuristic(state->MDPstate, pSearchStateSpace);
+        state->h = ComputeRootedHeuristic(state->MDPstate);
     else
         state->h = 0;
 #else
@@ -454,10 +459,10 @@ void EPASEPlanner::UpdatePreds(EPASEState* state)
 
     //iterate through predecessors of s
     for (int pind = 0; pind < (int)PredIDV.size(); pind++) {
-        CMDPSTATE* PredMDPState = GetState(PredIDV[pind], pSearchStateSpace);
+        CMDPSTATE* PredMDPState = GetState(PredIDV[pind]);
         predstate = (EPASEState*)(PredMDPState->PlannerSpecificData);
         if (predstate->callnumberaccessed != pSearchStateSpace->callnumber) {
-            ReInitializeSearchStateInfo(predstate, pSearchStateSpace);
+            ReInitializeSearchStateInfo(predstate);
         }
 
         //see if we can improve the value of predstate
@@ -468,16 +473,13 @@ void EPASEPlanner::UpdatePreds(EPASEState* state)
 
             //re-insert into heap if not closed yet
             if (predstate->iterationclosed != pSearchStateSpace->searchiteration) {
-                key.key[0] = predstate->g + (int)(pSearchStateSpace->eps * predstate->h);
+                //key.key[0] = predstate->g + (int)(pSearchStateSpace->eps * predstate->h);
                 //key.key[1] = predstate->h;
-                if (predstate->heapindex != 0)
-                    pSearchStateSpace->heap->updateheap(predstate, key);
-                else
-                    pSearchStateSpace->heap->insertheap(predstate, key);
+                heap.insert(predstate);
             }
             //take care of incons list
             else if (predstate->listelem[EPASE_INCONS_LIST_ID] == NULL) {
-                pSearchStateSpace->inconslist->insert(predstate, EPASE_INCONS_LIST_ID);
+                // TODO: pSearchStateSpace->inconslist->insert(predstate, EPASE_INCONS_LIST_ID);
             }
         }
     } //for predecessors
@@ -495,12 +497,12 @@ void EPASEPlanner::UpdateSuccs(EPASEState* state)
 
     //iterate through predecessors of s
     for (int sind = 0; sind < (int)SuccIDV.size(); sind++) {
-        CMDPSTATE* SuccMDPState = GetState(SuccIDV[sind], pSearchStateSpace);
+        CMDPSTATE* SuccMDPState = GetState(SuccIDV[sind]);
         int cost = CostV[sind];
 
         succstate = (EPASEState*)(SuccMDPState->PlannerSpecificData);
         if (succstate->callnumberaccessed != pSearchStateSpace->callnumber) {
-            ReInitializeSearchStateInfo(succstate, pSearchStateSpace);
+            ReInitializeSearchStateInfo(succstate);
         }
 
         //see if we can improve the value of succstate
@@ -512,18 +514,15 @@ void EPASEPlanner::UpdateSuccs(EPASEState* state)
             //re-insert into heap if not closed yet
             if (succstate->iterationclosed != pSearchStateSpace->searchiteration) {
 
-                key.key[0] = succstate->g + (int)(pSearchStateSpace->eps * succstate->h);
+                //key.key[0] = succstate->g + (int)(pSearchStateSpace->eps * succstate->h);
 
                 //key.key[1] = succstate->h;
 
-                if (succstate->heapindex != 0)
-                    pSearchStateSpace->heap->updateheap(succstate, key);
-                else
-                    pSearchStateSpace->heap->insertheap(succstate, key);
+                heap.insert(succstate);
             }
             //take care of incons list
             else if (succstate->listelem[EPASE_INCONS_LIST_ID] == NULL) {
-                pSearchStateSpace->inconslist->insert(succstate, EPASE_INCONS_LIST_ID);
+                // TODO: pSearchStateSpace->inconslist->insert(succstate, EPASE_INCONS_LIST_ID);
             }
         } //check for cost improvement
     } //for actions
@@ -532,7 +531,7 @@ void EPASEPlanner::UpdateSuccs(EPASEState* state)
 //TODO-debugmax - add obsthresh and other thresholds to other environments in 3dkin
 int EPASEPlanner::GetGVal(int StateID)
 {
-    CMDPSTATE* cmdp_state = GetState(StateID, pSearchStateSpace);
+    CMDPSTATE* cmdp_state = GetState(StateID);
     EPASEState* state = (EPASEState*)cmdp_state->PlannerSpecificData;
     return state->g;
 }
@@ -542,7 +541,7 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
 {
     int expands, fval, gb;
     EPASEState *state, *searchgoalstate;
-    CKey key, minkey;
+    CKey key;
     CKey goalkey;
 
     expands = 0;
@@ -555,7 +554,7 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
     //goal state
     searchgoalstate = (EPASEState*)(pSearchStateSpace->searchgoalstate->PlannerSpecificData);
     if (searchgoalstate->callnumberaccessed != pSearchStateSpace->callnumber) {
-        ReInitializeSearchStateInfo(searchgoalstate, pSearchStateSpace);
+        ReInitializeSearchStateInfo(searchgoalstate);
     }
 
     //set goal key
@@ -563,17 +562,15 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
     //goalkey.key[1] = searchgoalstate->h;
 
     //expand states until done
-    minkey = pSearchStateSpace->heap.remove(gb, fval);
-    CKey oldkey = minkey;
-    while (!pSearchStateSpace->heap.empty() && minkey.key[0] < INFINITECOST && goalkey > minkey &&
-           GetTimeSince(timeStart) < MaxNumofSecs &&
-               (pSearchStateSpace->eps_satisfied == INFINITECOST ||
-               GetTimeSince(timeStart) < repair_time ))
+    /* TODO remove?: minkey = heap.remove(gb, fval);
+    CKey oldkey = minkey;*/
+    while (/* TODO: termination condition on bound(goal) */
+        	GetTimeSince(timeStart) < MaxNumofSecs &&
+            (pSearchStateSpace->eps_satisfied == INFINITECOST || GetTimeSince(timeStart) < repair_time) &&
+            (state = heap.remove(gb, fval)) != NULL)
     {
-		//get the state
-		state = (EPASEState*)pSearchStateSpace->heap.remove(gb, fval);
-		/* TODO: look at this old epase code:
-		pARAState* state = heap.remove(&lock, &fval,thread_id);
+		/* TODO remove?:
+		EPASEState* state = heap.remove(&lock, &fval,thread_id);
 		if(state==NULL){
 			printf("thread %d: heap remove returned NULL\n",thread_id);
 			break;
@@ -595,16 +592,18 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
         //SBPL_FFLUSH(fDeb);
 #endif
 
+/* TODO remove?: 
 #if DEBUG
         if (minkey.key[0] < oldkey.key[0] && fabs(this->finitial_eps - 1.0) < ERR_EPS) {
             //SBPL_PRINTF("WARN in search: the sequence of keys decreases\n");
             //throw new SBPL_Exception();
         }
         oldkey = minkey;
-#endif
+#endif*/
 
-		if(goal_state->g <= (unsigned int)fval){
-			printf("thread %d: goal g-val is less than min fval\n",thread_id);
+        EPASEState* goal_state = (EPASEState*)(pSearchStateSpace->searchgoalstate->PlannerSpecificData);
+		if (goal_state->g <= (unsigned int)fval) {
+			// TODO: printf("thread %d: goal g-val is less than min fval\n",thread_id);
 			iteration_done = true;
 			return 1;
 			break;
@@ -618,7 +617,7 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
 #endif
         }
 
-        pSearchStateSpace->heap.removeBE(state);
+        heap.removeBE(state);
 
         //recompute state value
         state->v = state->g;
@@ -634,7 +633,7 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
     //cnt += q.be.size();
     //printf("thread %d: expanding with %d other threads\n",thread_id,cnt);
     //environment_->PrintState(state->MDPstate,true);
-    if(thread_id==0){
+    /*if(thread_id==0){
       rate += cnt;
       rate_cnt++;
       if(rate_cnt==100){
@@ -650,16 +649,17 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
     //if(bad_cnt>3)
       //heap.analyze();
     being_expanded[thread_id] = state;
+    */
     //being_expanded_fval[thread_id] = fval;
-    lock.unlock();
+    // TODO: lock.unlock();
 
         if (bforwardsearch)
-            UpdateSuccs(state, pSearchStateSpace);
+            UpdateSuccs(state);
         else
-            UpdatePreds(state, pSearchStateSpace);
+            UpdatePreds(state);
 
         //recompute minkey
-        minkey = pSearchStateSpace->heap->getminkeyheap();
+        // TODO remove?: minkey = heap.getminkeyheap();
 
         //recompute goalkey if necessary
         if (goalkey.key[0] != (int)searchgoalstate->g) {
@@ -675,15 +675,15 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
     }
 
     int retv = 1;
-    if (searchgoalstate->g == INFINITECOST && pSearchStateSpace->heap->emptyheap()) {
+    if (searchgoalstate->g == INFINITECOST && heap.empty()) {
         SBPL_PRINTF("solution does not exist: search exited because heap is empty\n");
         retv = 0;
     }
-    else if (!pSearchStateSpace->heap->emptyheap() && goalkey > minkey) {
+    else if (!heap.empty()/*TODO remove?: && goalkey > minkey*/) {
         SBPL_PRINTF("search exited because it ran out of time\n");
         retv = 2;
     }
-    else if (searchgoalstate->g == INFINITECOST && !pSearchStateSpace->heap->emptyheap()) {
+    else if (searchgoalstate->g == INFINITECOST && !heap.empty()) {
         SBPL_PRINTF("solution does not exist: search exited because all candidates for expansion have "
                     "infinite heuristics\n");
         retv = 0;
@@ -704,11 +704,10 @@ void EPASEPlanner::BuildNewOPENList()
 {
     EPASEState *state;
     CKey key;
-    myHeap* pheap = pSearchStateSpace->heap;
-    CList* pinconslist = pSearchStateSpace->inconslist;
+    // TODO: CList* pinconslist = pSearchStateSpace->inconslist;
 
     //move incons into open
-    while (pinconslist->firstelement != NULL) {
+    /* TODO: while (pinconslist->firstelement != NULL) {
         state = (EPASEState*)pinconslist->firstelement->liststate;
 
         //compute f-value
@@ -716,25 +715,25 @@ void EPASEPlanner::BuildNewOPENList()
         //key.key[1] = state->h;
 
         //insert into OPEN
-        pheap->insertheap(state, key);
+        heap->insert(state);
         //remove from INCONS
         pinconslist->remove(state, EPASE_INCONS_LIST_ID);
-    }
+    }*/
 }
 
 void EPASEPlanner::Reevaluatefvals()
 {
     CKey key;
     int i;
-    myHeap* pheap = pSearchStateSpace->heap;
 
     //recompute priorities for states in OPEN and reorder it
-    for (i = 1; i <= pheap->currentsize; ++i) {
-        EPASEState* state = (EPASEState*)pheap->heap[i].heapstate;
-        pheap->heap[i].key.key[0] = state->g + (int)(pSearchStateSpace->eps * state->h);
-        //pheap->heap[i].key.key[1] = state->h;
-    }
-    pheap->makeheap();
+    myHeap::DualIterator q_it(heap);
+  	EPASEState* s = q_it.next();
+	while (s->g < INFINITECOST) {
+	  //TODO: heap[i].key.key[0] = state->g + (int)(pSearchStateSpace->eps * state->h);
+      //TODO: heap[i].key.key[1] = state->h;
+	  s = q_it.next();
+	}
 
     pSearchStateSpace->bReevaluatefvals = false;
 }
@@ -745,7 +744,7 @@ void EPASEPlanner::Reevaluatehvals()
     {
         CMDPSTATE* MDPstate = pSearchStateSpace->searchMDP.StateArray[i];
         EPASEState* state = (EPASEState*)MDPstate->PlannerSpecificData;
-        state->h = ComputeRootedHeuristic(MDPstate, pSearchStateSpace);
+        state->h = ComputeRootedHeuristic(MDPstate);
     }
 }
 
@@ -754,8 +753,8 @@ void EPASEPlanner::Reevaluatehvals()
 int EPASEPlanner::CreateSearchStateSpace()
 {
     //create a heap
-    pSearchStateSpace->heap = new myHeap;
-    pSearchStateSpace->inconslist = new CList;
+    heap.clear();
+    // TODO: pSearchStateSpace->inconslist = new CList;
     MaxMemoryCounter += sizeof(myHeap);
     MaxMemoryCounter += sizeof(CList);
 
@@ -773,17 +772,13 @@ int EPASEPlanner::CreateSearchStateSpace()
 //deallocates memory used by SearchStateSpace
 void EPASEPlanner::DeleteSearchStateSpace()
 {
-    if (pSearchStateSpace->heap != NULL) {
-        pSearchStateSpace->heap->makeemptyheap();
-        delete pSearchStateSpace->heap;
-        pSearchStateSpace->heap = NULL;
-    }
+    heap.clear();
 
-    if (pSearchStateSpace->inconslist != NULL) {
+    /* TODO: if (pSearchStateSpace->inconslist != NULL) {
         pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
         delete pSearchStateSpace->inconslist;
         pSearchStateSpace->inconslist = NULL;
-    }
+    }*/
 
     //delete the states themselves
     int iend = (int)pSearchStateSpace->searchMDP.StateArray.size();
@@ -802,8 +797,8 @@ void EPASEPlanner::DeleteSearchStateSpace()
 //needs to be done before deleting states
 int EPASEPlanner::ResetSearchStateSpace()
 {
-    pSearchStateSpace->heap->makeemptyheap();
-    pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
+    heap.clear();
+    // TODO: pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
 
     return 1;
 }
@@ -825,8 +820,8 @@ void EPASEPlanner::ReInitializeSearchStateSpace()
         pSearchStateSpace->callnumber,pSearchStateSpace->searchiteration );
 #endif
 
-    pSearchStateSpace->heap->makeemptyheap();
-    pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
+    heap.clear();
+    // TODO: pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
 
     //reset 
     pSearchStateSpace->eps = this->finitial_eps;
@@ -835,20 +830,20 @@ void EPASEPlanner::ReInitializeSearchStateSpace()
     //initialize start state
     EPASEState* startstateinfo = (EPASEState*)(pSearchStateSpace->searchstartstate->PlannerSpecificData);
     if (startstateinfo->callnumberaccessed != pSearchStateSpace->callnumber) {
-        ReInitializeSearchStateInfo(startstateinfo, pSearchStateSpace);
+        ReInitializeSearchStateInfo(startstateinfo);
     }
     startstateinfo->g = 0;
     
     //initialize goal state
     EPASEState* searchgoalstate = (EPASEState*)(pSearchStateSpace->searchgoalstate->PlannerSpecificData);
     if (searchgoalstate->callnumberaccessed != pSearchStateSpace->callnumber) {
-        ReInitializeSearchStateInfo(searchgoalstate, pSearchStateSpace);
+        ReInitializeSearchStateInfo(searchgoalstate);
     }
 
     //insert start state into the heap
     key.key[0] = (long int)(pSearchStateSpace->eps * startstateinfo->h);
     //key.key[1] = startstateinfo->h;
-    pSearchStateSpace->heap->insertheap(startstateinfo, key);
+    heap.insert(startstateinfo);
 
     pSearchStateSpace->bReinitializeSearchStateSpace = false;
     pSearchStateSpace->bReevaluatefvals = false;
@@ -857,7 +852,7 @@ void EPASEPlanner::ReInitializeSearchStateSpace()
 //very first initialization
 int EPASEPlanner::InitializeSearchStateSpace()
 {
-    if (pSearchStateSpace->heap->currentsize != 0 || pSearchStateSpace->inconslist->currentsize != 0) {
+    if (!heap.empty() || pSearchStateSpace->inconslist->currentsize != 0) {
         SBPL_ERROR("ERROR in InitializeSearchStateSpace: heap or list is not empty\n");
         throw new SBPL_Exception();
     }
@@ -884,12 +879,12 @@ int EPASEPlanner::SetSearchGoalState(int SearchGoalStateID)
     if (pSearchStateSpace->searchgoalstate == NULL ||
         pSearchStateSpace->searchgoalstate->StateID != SearchGoalStateID)
     {
-        pSearchStateSpace->searchgoalstate = GetState(SearchGoalStateID, pSearchStateSpace);
+        pSearchStateSpace->searchgoalstate = GetState(SearchGoalStateID);
 
         //should be new search iteration
         pSearchStateSpace->eps_satisfied = INFINITECOST;
         pSearchStateSpace->bNewSearchIteration = true;
-        pSearchStateSpace_->eps = this->finitial_eps;
+        pSearchStateSpace->eps = this->finitial_eps;
 
 #if USE_HEUR
         //recompute heuristic for the heap if heuristics is used
@@ -902,7 +897,7 @@ int EPASEPlanner::SetSearchGoalState(int SearchGoalStateID)
 
 int EPASEPlanner::SetSearchStartState(int SearchStartStateID)
 {
-    CMDPSTATE* MDPstate = GetState(SearchStartStateID, pSearchStateSpace);
+    CMDPSTATE* MDPstate = GetState(SearchStartStateID);
 
     if (MDPstate != pSearchStateSpace->searchstartstate) {
         pSearchStateSpace->searchstartstate = MDPstate;
@@ -1040,7 +1035,7 @@ void EPASEPlanner::PrintSearchState(EPASEState* state, FILE* fOut)
 
 int EPASEPlanner::getHeurValue(int StateID)
 {
-    CMDPSTATE* MDPstate = GetState(StateID, pSearchStateSpace);
+    CMDPSTATE* MDPstate = GetState(StateID);
     EPASEState* searchstateinfo = (EPASEState*)MDPstate->PlannerSpecificData;
     return searchstateinfo->h;
 }
@@ -1060,7 +1055,7 @@ vector<int> EPASEPlanner::GetSearchPath(int& solcost)
         goalstate = pSearchStateSpace->searchgoalstate;
 
         //reconstruct the path by setting bestnextstate pointers appropriately
-        ReconstructPath(pSearchStateSpace);
+        ReconstructPath();
     }
     else {
         startstate = pSearchStateSpace->searchgoalstate;
@@ -1150,12 +1145,12 @@ bool EPASEPlanner::Search(vector<int>& pathIds, int & PathCost,
     if (pSearchStateSpace->bReevaluatefvals) {
         // costs have changed or a new goal has been set
         environment_->EnsureHeuristicsUpdated(bforwardsearch);
-        Reevaluatehvals(pSearchStateSpace);
+        Reevaluatehvals();
     }
 
     if (pSearchStateSpace->bReinitializeSearchStateSpace) {
         //re-initialize state space
-        ReInitializeSearchStateSpace(pSearchStateSpace);
+        ReInitializeSearchStateSpace();
     }
 
     if (bOptimalSolution) {
@@ -1194,15 +1189,15 @@ bool EPASEPlanner::Search(vector<int>& pathIds, int & PathCost,
         if (pSearchStateSpace->bNewSearchIteration) {
             pSearchStateSpace->searchiteration++;
             pSearchStateSpace->bNewSearchIteration = false;
-            BuildNewOPENList(pSearchStateSpace);
+            BuildNewOPENList();
         }
 
         //re-compute f-values if necessary and reorder the heap
         if (pSearchStateSpace->bReevaluatefvals)
-            Reevaluatefvals(pSearchStateSpace);
+            Reevaluatefvals();
 
         //improve or compute path
-        if (ImprovePath(pSearchStateSpace, MaxNumofSecs) == 1) {
+        if (ImprovePath(MaxNumofSecs) == 1) {
             pSearchStateSpace->eps_satisfied = pSearchStateSpace->eps;
         }
 
@@ -1262,7 +1257,7 @@ bool EPASEPlanner::Search(vector<int>& pathIds, int & PathCost,
     }
     else {
         SBPL_PRINTF("solution is found\n");
-        pathIds = GetSearchPath(pSearchStateSpace, solcost);
+        pathIds = GetSearchPath(solcost);
         ret = true;
     }
 
@@ -1315,7 +1310,7 @@ int EPASEPlanner::replan(double allocated_time_secs, vector<int>* solution_state
     SBPL_PRINTF("planner: replan called (bFirstSol=%d, bOptSol=%d)\n", bFirstSolution, bOptimalSolution);
 
     //plan
-    if (!(bFound = Search(pSearchStateSpace_, pathIds, PathCost,
+    if (!(bFound = Search(pathIds, PathCost,
                           bFirstSolution, bOptimalSolution, allocated_time_secs)))
     {
         SBPL_PRINTF("failed to find a solution\n");
@@ -1334,13 +1329,13 @@ int EPASEPlanner::set_goal(int goal_stateID)
     environment_->PrintState(goal_stateID, true, stdout);
 
     if (bforwardsearch) {
-        if (SetSearchGoalState(goal_stateID, pSearchStateSpace_) != 1) {
+        if (SetSearchGoalState(goal_stateID) != 1) {
             SBPL_ERROR("ERROR: failed to set search goal state\n");
             return 0;
         }
     }
     else {
-        if (SetSearchStartState(goal_stateID, pSearchStateSpace_) != 1) {
+        if (SetSearchStartState(goal_stateID) != 1) {
             SBPL_ERROR("ERROR: failed to set search start state\n");
             return 0;
         }
@@ -1355,13 +1350,13 @@ int EPASEPlanner::set_start(int start_stateID)
     environment_->PrintState(start_stateID, true, stdout);
 
     if (bforwardsearch) {
-        if (SetSearchStartState(start_stateID, pSearchStateSpace_) != 1) {
+        if (SetSearchStartState(start_stateID) != 1) {
             SBPL_ERROR("ERROR: failed to set search start state\n");
             return 0;
         }
     }
     else {
-        if (SetSearchGoalState(start_stateID, pSearchStateSpace_) != 1) {
+        if (SetSearchGoalState(start_stateID) != 1) {
             SBPL_ERROR("ERROR: failed to set search goal state\n");
             return 0;
         }
@@ -1372,21 +1367,21 @@ int EPASEPlanner::set_start(int start_stateID)
 
 void EPASEPlanner::costs_changed(StateChangeQuery const & stateChange)
 {
-    pSearchStateSpace_->bReevaluatefvals = true;
-    pSearchStateSpace_->bReinitializeSearchStateSpace = true;
+    pSearchStateSpace->bReevaluatefvals = true;
+    pSearchStateSpace->bReinitializeSearchStateSpace = true;
 }
 
 void EPASEPlanner::costs_changed()
 {
-    pSearchStateSpace_->bReevaluatefvals = true;
-    pSearchStateSpace_->bReinitializeSearchStateSpace = true;
+    pSearchStateSpace->bReevaluatefvals = true;
+    pSearchStateSpace->bReinitializeSearchStateSpace = true;
 }
 
 int EPASEPlanner::force_planning_from_scratch()
 {
     SBPL_PRINTF("planner: forceplanfromscratch set\n");
 
-    pSearchStateSpace_->bReinitializeSearchStateSpace = true;
+    pSearchStateSpace->bReinitializeSearchStateSpace = true;
 
     return 1;
 }
@@ -1396,10 +1391,10 @@ int EPASEPlanner::force_planning_from_scratch_and_free_memory()
     SBPL_PRINTF("planner: forceplanfromscratch set\n");
     int start_id = -1;
     int goal_id = -1;
-    if (pSearchStateSpace_->searchstartstate)
-        start_id = pSearchStateSpace_->searchstartstate->StateID;
-    if (pSearchStateSpace_->searchgoalstate)
-        goal_id = pSearchStateSpace_->searchgoalstate->StateID;
+    if (pSearchStateSpace->searchstartstate)
+        start_id = pSearchStateSpace->searchstartstate->StateID;
+    if (pSearchStateSpace->searchgoalstate)
+        goal_id = pSearchStateSpace->searchgoalstate->StateID;
 
     if (!bforwardsearch) {
         int temp = start_id;
@@ -1407,9 +1402,9 @@ int EPASEPlanner::force_planning_from_scratch_and_free_memory()
         goal_id = temp;
     }
 
-    DeleteSearchStateSpace(pSearchStateSpace_);
-    CreateSearchStateSpace(pSearchStateSpace_);
-    InitializeSearchStateSpace(pSearchStateSpace_);
+    DeleteSearchStateSpace();
+    CreateSearchStateSpace();
+    InitializeSearchStateSpace();
     for (unsigned int i = 0; i < environment_->StateID2IndexMapping.size(); i++)
         for (int j = 0; j < NUMOFINDICES_STATEID2IND; j++)
             environment_->StateID2IndexMapping[i][j] = -1;
@@ -1432,7 +1427,7 @@ int EPASEPlanner::set_search_mode(bool bSearchUntilFirstSolution)
 
 void EPASEPlanner::print_searchpath(FILE* fOut)
 {
-    PrintSearchPath(pSearchStateSpace_, fOut);
+    PrintSearchPath(fOut);
 }
 
 //---------------------------------------------------------------------------------------------------------

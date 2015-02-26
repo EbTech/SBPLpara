@@ -129,11 +129,13 @@ class myHeap {
     std::multimap<int,EPASEState*> open, be;
     bool* done;
     DiscreteSpaceInformation* env;
-    double eps;
+    double epsOpt, epsBias;
+    int min_edge_cost, leeway;
     bool usable;
   public:
     myHeap(bool* done_flag, DiscreteSpaceInformation* e);
-    void setEps(double e);
+    void setEps(double e, double w, int cl);
+    int bound_back(const EPASEState* const sp, const EPASEState* const s) const;
     int bound(const EPASEState* const s) const;
     void clear();
     bool empty() const;
@@ -422,7 +424,7 @@ class EPASEPlanner : public SBPLPlanner
     virtual bool Search(std::vector<int>& pathIds, int & PathCost,
                         bool bFirstSolution, bool bOptimalSolution, double MaxNumofSecs);
 
-    virtual bool outOfTime();
+    //virtual bool outOfTime();
 };
 
 #endif
