@@ -74,7 +74,7 @@ int myHeap::bound(const EPASEState* const s) const {
   EPASEState* sp = q_it.next();
   int g_back = bound_back(sp, s);
   while (g_back < s->g && s->g <= g_front) {
-    int next_cost = sp->gp + pA_eps*env->fastHeuristic(sp->id,s->id);
+    int next_cost = sp->gp + pA_eps*env->GetFromToHeuristic(sp->MDPstate->StateID, s->MDPstate->StateID);
     g_front = min(g_front, next_cost);
     sp = q_it.next();
     g_back = bound_back(sp, s);
@@ -102,7 +102,8 @@ void myHeap::initIter(EPASEState* const s) const {
 void myHeap::insert(EPASEState* const s){
   if (s->iter != open.cend())
     open.erase(s->iter);
-  s->iter = open.insert(pair<int,EPASEState*>(s->g + wA_eps*ComputeHeuristic(s->MDPstate, a), s));
+  // TODO: compute start instead of goal heuristic if searching backwards
+  s->iter = open.insert(pair<int,EPASEState*>(s->g + wA_eps*env->GetGoalHeuristic(s->MDPstate->StateID), s));
 }
 
 void myHeap::removeBE(EPASEState* const s){
@@ -122,8 +123,8 @@ void myHeap::analyze(){
       printf("...\n");
       break;
     }
-    printf("       f=%d, g=%d, h=%d: \n",it->first,it->second->g,env->fastHeuristic(open.cbegin()->second->id,it->second->id));
-    //env->PrintState(it->second->id,true);
+    printf("       f=%d, g=%d, h=%d: \n",it->first,it->second->g,env->GetFromToHeuristic(open.cbegin()->second->MDPstate->StateID, it->second->MDPstate->StateID));
+    //env->PrintState(it->second->MDPstate,true);
     cnt++;
   }
   printf("}\n");
@@ -143,11 +144,11 @@ void myHeap::analyze(){
     bool valid = true;
     int cnt2 = 0;
     for(multimap<int,EPASEState*>::const_iterator it2=open.cbegin(); it2!=it; it2++){
-      if(int(it->second->g) - int(it2->second->g) > eps*env->fastHeuristic(it->second->id,it2->second->id)){
+      if(int(it->second->g) - int(it2->second->g) > eps*env->GetFromToHeuristic(it->second->MDPstate->StateID, it2->second->MDPstate->StateID)) {
         printf("invalid (%d,%d): %d - %d > %f*%d\n",
                 cnt,cnt2,
                 it->second->g, it2->second->g, eps, 
-                env->fastHeuristic(it->second->id,it2->second->id));
+                env->GetFromToHeuristic(it->second->MDPstate->StateID, it2->second->MDPstate->StateID));
         valid = false;
         break;
       }
@@ -165,19 +166,20 @@ void myHeap::analyze(){
   //cin.get();
 }
 
-EPASEState* myHeap::remove(int& gb, int& fval){
+EPASEState* myHeap::remove(int& gb, int& fval) {
   //analyze();
   
   //loop over open list to find a State we can expand
   if (usable) {
-    for (multimap<int,pARAState*>::const_iterator it = open.cbegin(); it != open.cend(); ++it) {
-      State* s = it->second;
+    for (multimap<int,EPASEState*>::const_iterator it = open.cbegin(); it != open.cend(); ++it) {
+      EPASEState* s = it->second;
       gb = bound(s);
       if (s->g <= gb) {
         //printf("got a State!");
         fval = it->first;
         open.erase(s->iter);
-        s->iter = be.insert(pair<int,pARAState*>(f(s),s));
+        int s_key = s->g + (int)(eps * s->h);
+        s->iter = be.insert(pair<int,EPASEState*>(s_key,s));
         /*#ifdef ANYTIME
           closed.push_back(s);
         #endif
@@ -196,7 +198,7 @@ EPASEPlanner::EPASEPlanner(DiscreteSpaceInformation* environment, bool bSearchFo
   heap(&iteration_done, environment), params(0.0) {
   bforwardsearch = bSearchForward;
   environment_ = environment;
-  replan_number = 0;
+  //replan_number = 0;
   //reconstructTime = 0.0;
 
   bsearchuntilfirstsolution = false;
@@ -217,16 +219,16 @@ EPASEPlanner::EPASEPlanner(DiscreteSpaceInformation* environment, bool bSearchFo
     throw new SBPL_Exception();
   }
 
-  pSearchStateSpace_ = new EPASESearchStateSpace_t;
+  pSearchStateSpace = new EPASESearchStateSpace_t;
 
   //create the EPASE planner
-  if (CreateSearchStateSpace(pSearchStateSpace_) != 1) {
+  if (CreateSearchStateSpace() != 1) {
     SBPL_ERROR("ERROR: failed to create statespace\n");
     return;
   }
 
   //set the start and goal states
-  if (InitializeSearchStateSpace(pSearchStateSpace_) != 1) {
+  if (InitializeSearchStateSpace() != 1) {
     SBPL_ERROR("ERROR: failed to create statespace\n");
     return;
   }
@@ -234,14 +236,9 @@ EPASEPlanner::EPASEPlanner(DiscreteSpaceInformation* environment, bool bSearchFo
   final_eps_planning_time = -1.0;
   num_of_expands_initial_solution = 0;
   final_eps = -1.0;
-
-  fout = fopen("stats.txt", "w");
   // TODO: push start state
 
-  goal_state_id = -1;
-  start_state_id = -1;
-
-  unique_lock<mutex> lock(mutex);
+  unique_lock<mutex> lock(the_mutex);
   //vector<boost::thread*> threads;
   //vector<pARAState*> being_expanded;
   planner_ok = true;
@@ -253,7 +250,6 @@ EPASEPlanner::EPASEPlanner(DiscreteSpaceInformation* environment, bool bSearchFo
 }
 
 EPASEPlanner::~EPASEPlanner() {
-  fclose(fout);
   unique_lock<mutex> lock(the_mutex);
   planner_ok = false;
   worker_cond.notify_all();
@@ -261,16 +257,16 @@ EPASEPlanner::~EPASEPlanner() {
   for(int i=0; i<EPASE_NUM_THREADS; i++)
     threads[i].join();
 
-  if (pSearchStateSpace_ != NULL) {
+  if (pSearchStateSpace != NULL) {
     //delete the statespace
-    DeleteSearchStateSpace( pSearchStateSpace_);
-    delete pSearchStateSpace_;
+    DeleteSearchStateSpace();
+    delete pSearchStateSpace;
   }
   SBPL_FCLOSE( fDeb);
 }
 
 void EPASEPlanner::astarThread() {
-  unique_lock<mutex> thread_lock(mutex);
+  unique_lock<mutex> thread_lock(the_mutex);
   int thread_id = thread_ids;
   thread_ids++;
   while (true) { // TODO find wakeup condition and then main_cond.notify_one();
@@ -290,15 +286,15 @@ void EPASEPlanner::astarThread() {
   }
 }
 
-void EPASEPlanner::Initialize_searchinfo(CMDPSTATE* state, EPASESearchStateSpace_t* pSearchStateSpace)
+void EPASEPlanner::Initialize_searchinfo(CMDPSTATE* state)
 {
     EPASEState* searchstateinfo = (EPASEState*)state->PlannerSpecificData;
 
     searchstateinfo->MDPstate = state;
-    InitializeSearchStateInfo(searchstateinfo, pSearchStateSpace);
+    InitializeSearchStateInfo(searchstateinfo);
 }
 
-CMDPSTATE* EPASEPlanner::CreateState(int stateID, EPASESearchStateSpace_t* pSearchStateSpace)
+CMDPSTATE* EPASEPlanner::CreateState(int stateID)
 {
     CMDPSTATE* state = NULL;
 
@@ -333,7 +329,7 @@ CMDPSTATE* EPASEPlanner::CreateState(int stateID, EPASESearchStateSpace_t* pSear
     return state;
 }
 
-CMDPSTATE* EPASEPlanner::GetState(int stateID, EPASESearchStateSpace_t* pSearchStateSpace)
+CMDPSTATE* EPASEPlanner::GetState(int stateID)
 {
     if (stateID >= (int)environment_->StateID2IndexMapping.size()) {
         SBPL_ERROR("ERROR int GetState: stateID %d is invalid\n", stateID);
@@ -348,7 +344,15 @@ CMDPSTATE* EPASEPlanner::GetState(int stateID, EPASESearchStateSpace_t* pSearchS
 
 //-----------------------------------------------------------------------------------------------------
 
-int EPASEPlanner::ComputeHeuristic(CMDPSTATE* MDPstate, EPASESearchStateSpace_t* pSearchStateSpace)
+int EPASEPlanner::ComputeHeuristic(CMDPSTATE* MDPfromState, CMDPSTATE* MDPtoState)
+{
+    //compute heuristic for search
+    return environment_->GetFromToHeuristic(MDPfromState->StateID, MDPtoState->StateID);
+}
+
+//-----------------------------------------------------------------------------------------------------
+
+int EPASEPlanner::ComputeRootedHeuristic(CMDPSTATE* MDPstate)
 {
     //compute heuristic for search
 
@@ -376,7 +380,7 @@ int EPASEPlanner::ComputeHeuristic(CMDPSTATE* MDPstate, EPASESearchStateSpace_t*
 }
 
 // initialization of a state
-void EPASEPlanner::InitializeSearchStateInfo(EPASEState* state, EPASESearchStateSpace_t* pSearchStateSpace)
+void EPASEPlanner::InitializeSearchStateInfo(EPASEState* state)
 {
     state->g = INFINITECOST;
     state->v = INFINITECOST;
@@ -395,7 +399,7 @@ void EPASEPlanner::InitializeSearchStateInfo(EPASEState* state, EPASESearchState
     //compute heuristics
 #if USE_HEUR
     if(pSearchStateSpace->searchgoalstate != NULL)
-        state->h = ComputeHeuristic(state->MDPstate, pSearchStateSpace);
+        state->h = ComputeRootedHeuristic(state->MDPstate, pSearchStateSpace);
     else
         state->h = 0;
 #else
@@ -404,7 +408,7 @@ void EPASEPlanner::InitializeSearchStateInfo(EPASEState* state, EPASESearchState
 }
 
 //re-initialization of a state
-void EPASEPlanner::ReInitializeSearchStateInfo(EPASEState* state, EPASESearchStateSpace_t* pSearchStateSpace)
+void EPASEPlanner::ReInitializeSearchStateInfo(EPASEState* state)
 {
     state->g = INFINITECOST;
     state->v = INFINITECOST;
@@ -423,7 +427,7 @@ void EPASEPlanner::ReInitializeSearchStateInfo(EPASEState* state, EPASESearchSta
     //compute heuristics
 #if USE_HEUR
     if(pSearchStateSpace->searchgoalstate != NULL)
-        state->h = ComputeHeuristic(state->MDPstate, pSearchStateSpace);
+        state->h = ComputeRootedHeuristic(state->MDPstate, pSearchStateSpace);
     else
         state->h = 0;
 #else
@@ -439,7 +443,7 @@ void EPASEPlanner::DeleteSearchStateData(EPASEState* state)
 }
 
 //used for backward search
-void EPASEPlanner::UpdatePreds(EPASEState* state, EPASESearchStateSpace_t* pSearchStateSpace)
+void EPASEPlanner::UpdatePreds(EPASEState* state)
 {
     vector<int> PredIDV;
     vector<int> CostV;
@@ -480,7 +484,7 @@ void EPASEPlanner::UpdatePreds(EPASEState* state, EPASESearchStateSpace_t* pSear
 }
 
 //used for forward search
-void EPASEPlanner::UpdateSuccs(EPASEState* state, EPASESearchStateSpace_t* pSearchStateSpace)
+void EPASEPlanner::UpdateSuccs(EPASEState* state)
 {
     vector<int> SuccIDV;
     vector<int> CostV;
@@ -526,7 +530,7 @@ void EPASEPlanner::UpdateSuccs(EPASEState* state, EPASESearchStateSpace_t* pSear
 }
 
 //TODO-debugmax - add obsthresh and other thresholds to other environments in 3dkin
-int EPASEPlanner::GetGVal(int StateID, EPASESearchStateSpace_t* pSearchStateSpace)
+int EPASEPlanner::GetGVal(int StateID)
 {
     CMDPSTATE* cmdp_state = GetState(StateID, pSearchStateSpace);
     EPASEState* state = (EPASEState*)cmdp_state->PlannerSpecificData;
@@ -534,7 +538,7 @@ int EPASEPlanner::GetGVal(int StateID, EPASESearchStateSpace_t* pSearchStateSpac
 }
 
 //returns 1 if the solution is found, 0 if the solution does not exist and 2 if it ran out of time
-int EPASEPlanner::ImprovePath(EPASESearchStateSpace_t* pSearchStateSpace, double MaxNumofSecs)
+int EPASEPlanner::ImprovePath(double MaxNumofSecs)
 {
     int expands, fval, gb;
     EPASEState *state, *searchgoalstate;
@@ -629,7 +633,7 @@ int EPASEPlanner::ImprovePath(EPASESearchStateSpace_t* pSearchStateSpace, double
     int cnt = 1;
     //cnt += q.be.size();
     //printf("thread %d: expanding with %d other threads\n",thread_id,cnt);
-    //environment_->PrintState(state->id,true);
+    //environment_->PrintState(state->MDPstate,true);
     if(thread_id==0){
       rate += cnt;
       rate_cnt++;
@@ -696,7 +700,7 @@ int EPASEPlanner::ImprovePath(EPASESearchStateSpace_t* pSearchStateSpace, double
     return retv;
 }
 
-void EPASEPlanner::BuildNewOPENList(EPASESearchStateSpace_t* pSearchStateSpace)
+void EPASEPlanner::BuildNewOPENList()
 {
     EPASEState *state;
     CKey key;
@@ -718,7 +722,7 @@ void EPASEPlanner::BuildNewOPENList(EPASESearchStateSpace_t* pSearchStateSpace)
     }
 }
 
-void EPASEPlanner::Reevaluatefvals(EPASESearchStateSpace_t* pSearchStateSpace)
+void EPASEPlanner::Reevaluatefvals()
 {
     CKey key;
     int i;
@@ -735,19 +739,19 @@ void EPASEPlanner::Reevaluatefvals(EPASESearchStateSpace_t* pSearchStateSpace)
     pSearchStateSpace->bReevaluatefvals = false;
 }
 
-void EPASEPlanner::Reevaluatehvals(EPASESearchStateSpace_t* pSearchStateSpace)
+void EPASEPlanner::Reevaluatehvals()
 {
     for(int i = 0; i < (int)pSearchStateSpace->searchMDP.StateArray.size(); i++)
     {
         CMDPSTATE* MDPstate = pSearchStateSpace->searchMDP.StateArray[i];
         EPASEState* state = (EPASEState*)MDPstate->PlannerSpecificData;
-        state->h = ComputeHeuristic(MDPstate, pSearchStateSpace);
+        state->h = ComputeRootedHeuristic(MDPstate, pSearchStateSpace);
     }
 }
 
 //creates (allocates memory) search state space
 //does not initialize search statespace
-int EPASEPlanner::CreateSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace)
+int EPASEPlanner::CreateSearchStateSpace()
 {
     //create a heap
     pSearchStateSpace->heap = new myHeap;
@@ -767,7 +771,7 @@ int EPASEPlanner::CreateSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSp
 }
 
 //deallocates memory used by SearchStateSpace
-void EPASEPlanner::DeleteSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace)
+void EPASEPlanner::DeleteSearchStateSpace()
 {
     if (pSearchStateSpace->heap != NULL) {
         pSearchStateSpace->heap->makeemptyheap();
@@ -796,7 +800,7 @@ void EPASEPlanner::DeleteSearchStateSpace(EPASESearchStateSpace_t* pSearchStateS
 
 //reset properly search state space
 //needs to be done before deleting states
-int EPASEPlanner::ResetSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace)
+int EPASEPlanner::ResetSearchStateSpace()
 {
     pSearchStateSpace->heap->makeemptyheap();
     pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
@@ -805,7 +809,7 @@ int EPASEPlanner::ResetSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpa
 }
 
 //initialization before each search
-void EPASEPlanner::ReInitializeSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace)
+void EPASEPlanner::ReInitializeSearchStateSpace()
 {
     CKey key;
 
@@ -851,7 +855,7 @@ void EPASEPlanner::ReInitializeSearchStateSpace(EPASESearchStateSpace_t* pSearch
 }
 
 //very first initialization
-int EPASEPlanner::InitializeSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace)
+int EPASEPlanner::InitializeSearchStateSpace()
 {
     if (pSearchStateSpace->heap->currentsize != 0 || pSearchStateSpace->inconslist->currentsize != 0) {
         SBPL_ERROR("ERROR in InitializeSearchStateSpace: heap or list is not empty\n");
@@ -875,7 +879,7 @@ int EPASEPlanner::InitializeSearchStateSpace(EPASESearchStateSpace_t* pSearchSta
     return 1;
 }
 
-int EPASEPlanner::SetSearchGoalState(int SearchGoalStateID, EPASESearchStateSpace_t* pSearchStateSpace)
+int EPASEPlanner::SetSearchGoalState(int SearchGoalStateID)
 {
     if (pSearchStateSpace->searchgoalstate == NULL ||
         pSearchStateSpace->searchgoalstate->StateID != SearchGoalStateID)
@@ -896,7 +900,7 @@ int EPASEPlanner::SetSearchGoalState(int SearchGoalStateID, EPASESearchStateSpac
     return 1;
 }
 
-int EPASEPlanner::SetSearchStartState(int SearchStartStateID, EPASESearchStateSpace_t* pSearchStateSpace)
+int EPASEPlanner::SetSearchStartState(int SearchStartStateID)
 {
     CMDPSTATE* MDPstate = GetState(SearchStartStateID, pSearchStateSpace);
 
@@ -908,7 +912,7 @@ int EPASEPlanner::SetSearchStartState(int SearchStartStateID, EPASESearchStateSp
     return 1;
 }
 
-int EPASEPlanner::ReconstructPath(EPASESearchStateSpace_t* pSearchStateSpace)
+int EPASEPlanner::ReconstructPath()
 {
     if (bforwardsearch) //nothing to do, if search is backward
     {
@@ -959,7 +963,7 @@ int EPASEPlanner::ReconstructPath(EPASESearchStateSpace_t* pSearchStateSpace)
     return 1;
 }
 
-void EPASEPlanner::PrintSearchPath(EPASESearchStateSpace_t* pSearchStateSpace, FILE* fOut)
+void EPASEPlanner::PrintSearchPath(FILE* fOut)
 {
     EPASEState* searchstateinfo;
     CMDPSTATE* state;
@@ -1034,14 +1038,14 @@ void EPASEPlanner::PrintSearchState(EPASEState* state, FILE* fOut)
     environment_->PrintState(state->MDPstate->StateID, true, fOut);
 }
 
-int EPASEPlanner::getHeurValue(EPASESearchStateSpace_t* pSearchStateSpace, int StateID)
+int EPASEPlanner::getHeurValue(int StateID)
 {
     CMDPSTATE* MDPstate = GetState(StateID, pSearchStateSpace);
     EPASEState* searchstateinfo = (EPASEState*)MDPstate->PlannerSpecificData;
     return searchstateinfo->h;
 }
 
-vector<int> EPASEPlanner::GetSearchPath(EPASESearchStateSpace_t* pSearchStateSpace, int& solcost)
+vector<int> EPASEPlanner::GetSearchPath(int& solcost)
 {
     vector<int> SuccIDV;
     vector<int> CostV;
@@ -1128,7 +1132,7 @@ vector<int> EPASEPlanner::GetSearchPath(EPASESearchStateSpace_t* pSearchStateSpa
     return wholePathIds;
 }
 
-bool EPASEPlanner::Search(EPASESearchStateSpace_t* pSearchStateSpace, vector<int>& pathIds, int & PathCost,
+bool EPASEPlanner::Search(vector<int>& pathIds, int & PathCost,
                         bool bFirstSolution, bool bOptimalSolution, double MaxNumofSecs)
 {
     CKey key;

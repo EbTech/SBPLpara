@@ -142,7 +142,7 @@ class myHeap {
     void removeBE(EPASEState* const s);
     int min_value();
     void analyze();
-    EPASEState* remove(std::unique_lock<std::mutex>* lock, int* fval, int thread_id);
+    EPASEState* remove(int& gb, int& fval);
 
     class DualIterator {
       public:
@@ -248,7 +248,7 @@ class EPASEPlanner : public SBPLPlanner
     /**
      * \brief returns the suboptimality bound on the currently found solution
      */
-    virtual double get_solution_eps() const { return pSearchStateSpace_->eps_satisfied; }
+    virtual double get_solution_eps() const { return pSearchStateSpace->eps_satisfied; }
 
     /**
      * \brief returns the number of states expanded so far
@@ -328,7 +328,7 @@ class EPASEPlanner : public SBPLPlanner
 
     bool bsearchuntilfirstsolution; //if true, then search until first solution only (see planner.h for search modes)
 
-    EPASESearchStateSpace_t* pSearchStateSpace_;
+    EPASESearchStateSpace_t* pSearchStateSpace;
 
     unsigned int searchexpands;
     int MaxMemoryCounter;
@@ -347,74 +347,79 @@ class EPASEPlanner : public SBPLPlanner
     int improve_path_result;
     int bad_cnt;
 
+    myHeap heap;
+    ReplanParams params;
+
     //member functions
-    virtual void Initialize_searchinfo(CMDPSTATE* state, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual void Initialize_searchinfo(CMDPSTATE* state);
 
-    virtual CMDPSTATE* CreateState(int stateID, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual CMDPSTATE* CreateState(int stateID);
 
-    virtual CMDPSTATE* GetState(int stateID, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual CMDPSTATE* GetState(int stateID);
 
-    virtual int ComputeHeuristic(CMDPSTATE* MDPstate, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual int ComputeHeuristic(CMDPSTATE* MDPfromState, CMDPSTATE* MDPtoState);
+
+    virtual int ComputeRootedHeuristic(CMDPSTATE* MDPstate);
 
     //initialization of a state
-    virtual void InitializeSearchStateInfo(EPASEState* state, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual void InitializeSearchStateInfo(EPASEState* state);
 
     //re-initialization of a state
-    virtual void ReInitializeSearchStateInfo(EPASEState* state, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual void ReInitializeSearchStateInfo(EPASEState* state);
 
     virtual void DeleteSearchStateData(EPASEState* state);
 
     //used for backward search
-    virtual void UpdatePreds(EPASEState* state, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual void UpdatePreds(EPASEState* state);
 
     //used for forward search
-    virtual void UpdateSuccs(EPASEState* state, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual void UpdateSuccs(EPASEState* state);
 
-    virtual int GetGVal(int StateID, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual int GetGVal(int StateID);
 
     //returns 1 if the solution is found, 0 if the solution does not exist and 2 if it ran out of time
-    virtual int ImprovePath(EPASESearchStateSpace_t* pSearchStateSpace, double MaxNumofSecs);
+    virtual int ImprovePath(double MaxNumofSecs);
 
-    virtual void BuildNewOPENList(EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual void BuildNewOPENList();
 
-    virtual void Reevaluatefvals(EPASESearchStateSpace_t* pSearchStateSpace);
-    virtual void Reevaluatehvals(EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual void Reevaluatefvals();
+    virtual void Reevaluatehvals();
 
     //creates (allocates memory) search state space
     //does not initialize search statespace
-    virtual int CreateSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual int CreateSearchStateSpace();
 
     //deallocates memory used by SearchStateSpace
-    virtual void DeleteSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual void DeleteSearchStateSpace();
 
     //debugging
     virtual void PrintSearchState(EPASEState* state, FILE* fOut);
 
     //reset properly search state space
     //needs to be done before deleting states
-    virtual int ResetSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual int ResetSearchStateSpace();
 
     //initialization before each search
-    virtual void ReInitializeSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual void ReInitializeSearchStateSpace();
 
     //very first initialization
-    virtual int InitializeSearchStateSpace(EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual int InitializeSearchStateSpace();
 
-    virtual int SetSearchGoalState(int SearchGoalStateID, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual int SetSearchGoalState(int SearchGoalStateID);
 
-    virtual int SetSearchStartState(int SearchStartStateID, EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual int SetSearchStartState(int SearchStartStateID);
 
     //reconstruct path functions are only relevant for forward search
-    virtual int ReconstructPath(EPASESearchStateSpace_t* pSearchStateSpace);
+    virtual int ReconstructPath();
 
-    virtual void PrintSearchPath(EPASESearchStateSpace_t* pSearchStateSpace, FILE* fOut);
+    virtual void PrintSearchPath(FILE* fOut);
 
-    virtual int getHeurValue(EPASESearchStateSpace_t* pSearchStateSpace, int StateID);
+    virtual int getHeurValue(int StateID);
 
     //get path
-    virtual std::vector<int> GetSearchPath(EPASESearchStateSpace_t* pSearchStateSpace, int& solcost);
+    virtual std::vector<int> GetSearchPath(int& solcost);
 
-    virtual bool Search(EPASESearchStateSpace_t* pSearchStateSpace, std::vector<int>& pathIds, int & PathCost,
+    virtual bool Search(std::vector<int>& pathIds, int & PathCost,
                         bool bFirstSolution, bool bOptimalSolution, double MaxNumofSecs);
 
     virtual bool outOfTime();
