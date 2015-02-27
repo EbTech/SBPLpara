@@ -40,6 +40,7 @@ enum PlannerType
     INVALID_PLANNER_TYPE = -1,
     PLANNER_TYPE_ADSTAR,
     PLANNER_TYPE_ARASTAR,
+    PLANNER_TYPE_EPASE,
     PLANNER_TYPE_PPCP,
     PLANNER_TYPE_RSTAR,
     PLANNER_TYPE_VI,
@@ -55,6 +56,8 @@ std::string PlannerTypeToStr(PlannerType plannerType)
         return std::string("adstar");
     case PLANNER_TYPE_ARASTAR:
         return std::string("arastar");
+    case PLANNER_TYPE_EPASE:
+        return std::string("epase");
     case PLANNER_TYPE_PPCP:
         return std::string("ppcp");
     case PLANNER_TYPE_RSTAR:
@@ -75,6 +78,9 @@ PlannerType StrToPlannerType(const char* str)
     }
     else if (!strcmp(str, "arastar")) {
         return PLANNER_TYPE_ARASTAR;
+    }
+    else if (!strcmp(str, "epase")) {
+        return PLANNER_TYPE_EPASE;
     }
     else if (!strcmp(str, "ppcp")) {
         return PLANNER_TYPE_PPCP;
@@ -190,7 +196,7 @@ void PrintHelp(char** argv)
     printf("<env_t>                   One of 2d, xytheta, xythetamlev, robarm.\n");
     printf("[--planner=<planner_t>]   (optional) Select a planner to use for the example.\n");
     printf("                          The default is \"arastar\".\n");
-    printf("<planner_t>               One of arastar, adstar, rstar, anastar.\n");
+    printf("<planner_t>               One of arastar, epase, adstar, rstar, anastar.\n");
     printf("[--search-dir=<search_t>] (optional) Select the type of search to run. The default\n");
     printf("                          is \"backwards\".\n");
     printf("<search_t>                One of backward, forward.\n");
@@ -323,6 +329,10 @@ int plan2d(PlannerType plannerType, char* envCfgFilename, bool forwardSearch)
     case PLANNER_TYPE_ARASTAR:
         printf("Initializing ARAPlanner...\n");
         planner = new ARAPlanner(&environment_nav2D, bforwardsearch);
+        break;
+    case PLANNER_TYPE_EPASE:
+        printf("Initializing EPASEPlanner...\n");
+        planner = new EPASEPlanner(&environment_nav2D, bforwardsearch);
         break;
     case PLANNER_TYPE_ADSTAR:
         printf("Initializing ADPlanner...\n");
@@ -515,6 +525,10 @@ int planxythetalat(PlannerType plannerType, char* envCfgFilename, char* motPrimF
     case PLANNER_TYPE_ARASTAR:
         printf("Initializing ARAPlanner...\n");
         planner = new ARAPlanner(&environment_navxythetalat, bforwardsearch);
+        break;
+    case PLANNER_TYPE_EPASE:
+        printf("Initializing EPASEPlanner...\n");
+        planner = new EPASEPlanner(&environment_navxythetalat, bforwardsearch);
         break;
     case PLANNER_TYPE_ADSTAR:
         printf("Initializing ADPlanner...\n");
@@ -724,6 +738,10 @@ int planxythetamlevlat(PlannerType plannerType, char* envCfgFilename, char* motP
         printf("Initializing ARAPlanner...\n");
         planner = new ARAPlanner(&environment_navxythetalat, bforwardsearch);
         break;
+    case PLANNER_TYPE_EPASE:
+        printf("Initializing EPASEPlanner...\n");
+        planner = new EPASEPlanner(&environment_navxythetalat, bforwardsearch);
+        break;
     case PLANNER_TYPE_ADSTAR:
         printf("Initializing ADPlanner...\n");
         planner = new ADPlanner(&environment_navxythetalat, bforwardsearch);
@@ -878,6 +896,10 @@ int planandnavigate2d(PlannerType plannerType, char* envCfgFilename)
     case PLANNER_TYPE_ARASTAR:
         printf("Initializing ARAPlanner...\n");
         planner = new ARAPlanner(&environment_nav2D, bforwardsearch);
+        break;
+    case PLANNER_TYPE_EPASE:
+        printf("Initializing EPASEPlanner...\n");
+        planner = new EPASEPlanner(&environment_nav2D, bforwardsearch);
         break;
     case PLANNER_TYPE_ADSTAR:
         printf("Initializing ADPlanner...\n");
@@ -1214,6 +1236,10 @@ int planandnavigatexythetalat(PlannerType plannerType, char* envCfgFilename, cha
         printf("Initializing ARAPlanner...\n");
         planner = new ARAPlanner(&environment_navxythetalat, bforwardsearch);
         break;
+    case PLANNER_TYPE_EPASE:
+        printf("Initializing EPASEPlanner...\n");
+        planner = new EPASEPlanner(&environment_navxythetalat, bforwardsearch);
+        break;
     case PLANNER_TYPE_ADSTAR:
         printf("Initializing ADPlanner...\n");
         planner = new ADPlanner(&environment_navxythetalat, bforwardsearch);
@@ -1494,6 +1520,10 @@ int planrobarm(PlannerType plannerType, char* envCfgFilename, bool forwardSearch
     case PLANNER_TYPE_ARASTAR:
         printf("Initializing ARAPlanner...\n");
         planner = new ARAPlanner(&environment_robarm, bforwardsearch);
+        break;
+    case PLANNER_TYPE_EPASE:
+        printf("Initializing EPASEPlanner...\n");
+        planner = new EPASEPlanner(&environment_robarm, bforwardsearch);
         break;
     case PLANNER_TYPE_ADSTAR:
         printf("Initializing ADPlanner...\n");
