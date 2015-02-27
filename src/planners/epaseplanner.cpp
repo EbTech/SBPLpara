@@ -38,10 +38,8 @@ using namespace std;
 
 //-------------------------------------------------------------------------------------------
 //Auxiliary functions
-typedef chrono::high_resolution_clock Clock;
 
-Clock::time_point timeStart;
-
+// returns the number of seconds between ts and the current time
 double GetTimeSince(const Clock::time_point& ts) {
   Clock::time_point t = Clock::now();
   double td = chrono::duration<double, chrono::seconds::period>(t-ts).count();
@@ -90,7 +88,7 @@ int myHeap::bound(const EPASEState* const s) const {
 void myHeap::clear(){
   open.clear(); be.clear(); /*closed.clear();
   null_state.mask = null_state.x = null_state.y = null_state.gp = 0;
-  null_state.g = INFINITE;
+  null_state.g = INFINITECOST;
   null_state.iter =
     open.insert(pair<Cost,State*>(f(&null_state),&null_state));
       be.insert(pair<Cost,State*>(f(&null_state),&null_state));*/
@@ -200,7 +198,7 @@ EPASEState* myHeap::remove(int& gb, int& fval) {
 //-------------------------------------------------------------------------------------------
 
 EPASEPlanner::EPASEPlanner(DiscreteSpaceInformation* environment, bool bSearchForward) :
-  heap(&iteration_done, environment), params(0.0) {
+  heap(&iteration_done, environment) {
   bforwardsearch = bSearchForward;
   environment_ = environment;
   //replan_number = 0;
@@ -267,7 +265,7 @@ EPASEPlanner::~EPASEPlanner() {
     DeleteSearchStateSpace();
     delete pSearchStateSpace;
   }
-  SBPL_FCLOSE( fDeb);
+  SBPL_FCLOSE(fDeb);
 }
 
 void EPASEPlanner::astarThread() {
@@ -473,13 +471,11 @@ void EPASEPlanner::UpdatePreds(EPASEState* state)
 
             //re-insert into heap if not closed yet
             if (predstate->iterationclosed != pSearchStateSpace->searchiteration) {
-                //key.key[0] = predstate->g + (int)(pSearchStateSpace->eps * predstate->h);
-                //key.key[1] = predstate->h;
                 heap.insert(predstate);
             }
             //take care of incons list
             else if (predstate->listelem[EPASE_INCONS_LIST_ID] == NULL) {
-                // TODO: pSearchStateSpace->inconslist->insert(predstate, EPASE_INCONS_LIST_ID);
+                pSearchStateSpace->inconslist->insert(predstate, EPASE_INCONS_LIST_ID);
             }
         }
     } //for predecessors
@@ -513,16 +509,11 @@ void EPASEPlanner::UpdateSuccs(EPASEState* state)
 
             //re-insert into heap if not closed yet
             if (succstate->iterationclosed != pSearchStateSpace->searchiteration) {
-
-                //key.key[0] = succstate->g + (int)(pSearchStateSpace->eps * succstate->h);
-
-                //key.key[1] = succstate->h;
-
                 heap.insert(succstate);
             }
             //take care of incons list
             else if (succstate->listelem[EPASE_INCONS_LIST_ID] == NULL) {
-                // TODO: pSearchStateSpace->inconslist->insert(succstate, EPASE_INCONS_LIST_ID);
+                pSearchStateSpace->inconslist->insert(succstate, EPASE_INCONS_LIST_ID);
             }
         } //check for cost improvement
     } //for actions
@@ -535,6 +526,8 @@ int EPASEPlanner::GetGVal(int StateID)
     EPASEState* state = (EPASEState*)cmdp_state->PlannerSpecificData;
     return state->g;
 }
+
+// TODO: compare (ImprovePath,BuildNewOPENList,Reevaluatefvals) with the versions in araplanner.cpp
 
 //returns 1 if the solution is found, 0 if the solution does not exist and 2 if it ran out of time
 int EPASEPlanner::ImprovePath(double MaxNumofSecs)
@@ -565,8 +558,8 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
     /* TODO remove?: minkey = heap.remove(gb, fval);
     CKey oldkey = minkey;*/
     while (/* TODO: termination condition on bound(goal) */
-        	GetTimeSince(timeStart) < MaxNumofSecs &&
-            (pSearchStateSpace->eps_satisfied == INFINITECOST || GetTimeSince(timeStart) < repair_time) &&
+        	GetTimeSince(timeStarted) < MaxNumofSecs &&
+            (pSearchStateSpace->eps_satisfied == INFINITECOST || GetTimeSince(timeStarted) < repair_time) &&
             (state = heap.remove(gb, fval)) != NULL)
     {
 		/* TODO remove?:
@@ -754,7 +747,7 @@ int EPASEPlanner::CreateSearchStateSpace()
 {
     //create a heap
     heap.clear();
-    // TODO: pSearchStateSpace->inconslist = new CList;
+    pSearchStateSpace->inconslist = new CList;
     MaxMemoryCounter += sizeof(myHeap);
     MaxMemoryCounter += sizeof(CList);
 
@@ -774,11 +767,11 @@ void EPASEPlanner::DeleteSearchStateSpace()
 {
     heap.clear();
 
-    /* TODO: if (pSearchStateSpace->inconslist != NULL) {
+    if (pSearchStateSpace->inconslist != NULL) {
         pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
         delete pSearchStateSpace->inconslist;
         pSearchStateSpace->inconslist = NULL;
-    }*/
+    }
 
     //delete the states themselves
     int iend = (int)pSearchStateSpace->searchMDP.StateArray.size();
@@ -798,7 +791,7 @@ void EPASEPlanner::DeleteSearchStateSpace()
 int EPASEPlanner::ResetSearchStateSpace()
 {
     heap.clear();
-    // TODO: pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
+    pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
 
     return 1;
 }
@@ -821,7 +814,7 @@ void EPASEPlanner::ReInitializeSearchStateSpace()
 #endif
 
     heap.clear();
-    // TODO: pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
+    pSearchStateSpace->inconslist->makeemptylist(EPASE_INCONS_LIST_ID);
 
     //reset 
     pSearchStateSpace->eps = this->finitial_eps;
@@ -1127,11 +1120,10 @@ vector<int> EPASEPlanner::GetSearchPath(int& solcost)
     return wholePathIds;
 }
 
-bool EPASEPlanner::Search(vector<int>& pathIds, int & PathCost,
-                        bool bFirstSolution, bool bOptimalSolution, double MaxNumofSecs)
+bool EPASEPlanner::Search(vector<int>& pathIds, int & PathCost, bool bFirstSolution, bool bOptimalSolution, double MaxNumofSecs)
 {
     CKey key;
-    timeStart = Clock::now();
+    timeStarted = Clock::now();
     searchexpands = 0;
     num_of_expands_initial_solution = -1;
     double old_repair_time = repair_time;
@@ -1168,9 +1160,9 @@ bool EPASEPlanner::Search(vector<int>& pathIds, int & PathCost,
     int prevexpands = 0;
     Clock::time_point loop_time;
     while (pSearchStateSpace->eps_satisfied > final_epsilon &&
-           GetTimeSince(timeStart) < MaxNumofSecs &&
+           GetTimeSince(timeStarted) < MaxNumofSecs &&
                (pSearchStateSpace->eps_satisfied == INFINITECOST ||
-               GetTimeSince(timeStart) < repair_time ))
+               GetTimeSince(timeStarted) < repair_time ))
     {
         loop_time = Clock::now();
         //decrease eps for all subsequent iterations
@@ -1262,8 +1254,8 @@ bool EPASEPlanner::Search(vector<int>& pathIds, int & PathCost,
     }
 
     SBPL_PRINTF("total expands this call = %d, planning time = %.3f secs, solution cost=%d\n",
-                searchexpands, GetTimeSince(timeStart), solcost);
-    final_eps_planning_time = GetTimeSince(timeStart);
+                searchexpands, GetTimeSince(timeStarted), solcost);
+    final_eps_planning_time = GetTimeSince(timeStarted);
     final_eps = pSearchStateSpace->eps_satisfied;
     //SBPL_FPRINTF(fStat, "%d %d\n", searchexpands, solcost);
 
@@ -1310,8 +1302,7 @@ int EPASEPlanner::replan(double allocated_time_secs, vector<int>* solution_state
     SBPL_PRINTF("planner: replan called (bFirstSol=%d, bOptSol=%d)\n", bFirstSolution, bOptimalSolution);
 
     //plan
-    if (!(bFound = Search(pathIds, PathCost,
-                          bFirstSolution, bOptimalSolution, allocated_time_secs)))
+    if (!(bFound = Search(pathIds, PathCost, bFirstSolution, bOptimalSolution, allocated_time_secs)))
     {
         SBPL_PRINTF("failed to find a solution\n");
     }
@@ -1440,18 +1431,3 @@ void EPASEPlanner::get_search_stats(vector<PlannerStats>* s)
         s->push_back(stats[i]);
     }
 }
-
-/*bool EPASEPlanner::outOfTime(){
-  double time_used = GetTimeSince(timeStart);
-  //we are out of time if:
-         //we used up the max time limit OR
-         //we found some solution and used up the minimum time limit
-  if(params.return_first_solution)
-    return false;
-  if(time_used >= params.max_time)
-    printf("out of max time\n");
-  if(use_repair_time && eps_satisfied != INFINITECOST && time_used >= params.repair_time)
-    printf("used all repair time...\n");
-  return time_used >= params.max_time || 
-         (use_repair_time && eps_satisfied != INFINITECOST && time_used >= params.repair_time);
-}*/

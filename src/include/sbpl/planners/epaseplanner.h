@@ -59,6 +59,7 @@ class CList;
 class DiscreteSpaceInformation;
 class MDPConfig;
 class StateChangeQuery;
+typedef std::chrono::high_resolution_clock Clock;
 
 //-------------------------------------------------------------
 
@@ -167,7 +168,7 @@ typedef struct EPASESearchStateSpace
 {
     double eps;
     double eps_satisfied;
-    myHeap* heap;
+    // TODO: should heap be moved here? myHeap* heap;
     CList* inconslist;
     short unsigned int searchiteration;
     short unsigned int callnumber;
@@ -282,6 +283,9 @@ class EPASEPlanner : public SBPLPlanner
      */
     ~EPASEPlanner();
 
+    /**
+     * runs a search thread
+     */
     virtual void astarThread();
 
     /**
@@ -334,10 +338,10 @@ class EPASEPlanner : public SBPLPlanner
 
     unsigned int searchexpands;
     int MaxMemoryCounter;
-    clock_t TimeStarted;
+    Clock::time_point timeStarted;
     FILE *fDeb;
 
-    // parallel stuff
+    // TODO review: parallel stuff
     std::mutex the_mutex;
     std::condition_variable worker_cond;
     std::condition_variable main_cond;
@@ -348,9 +352,7 @@ class EPASEPlanner : public SBPLPlanner
     std::vector<std::thread> threads;
     int improve_path_result;
     int bad_cnt;
-
     myHeap heap;
-    ReplanParams params;
 
     //member functions
     virtual void Initialize_searchinfo(CMDPSTATE* state);
@@ -421,10 +423,7 @@ class EPASEPlanner : public SBPLPlanner
     //get path
     virtual std::vector<int> GetSearchPath(int& solcost);
 
-    virtual bool Search(std::vector<int>& pathIds, int & PathCost,
-                        bool bFirstSolution, bool bOptimalSolution, double MaxNumofSecs);
-
-    //virtual bool outOfTime();
+    virtual bool Search(std::vector<int>& pathIds, int & PathCost, bool bFirstSolution, bool bOptimalSolution, double MaxNumofSecs);
 };
 
 #endif
