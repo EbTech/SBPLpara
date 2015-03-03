@@ -2306,7 +2306,13 @@ void EnvironmentNAVXYTHETALAT::GetSuccs(int SourceStateID, vector<int>* SuccIDV,
     if (SourceStateID == EnvNAVXYTHETALAT.goalstateid) return;
 
     //get X, Y for the state
+#ifdef THREAD_SAFE
+    env_mutex.lock();
+#endif
     EnvNAVXYTHETALATHashEntry_t* HashEntry = StateID2CoordTable[SourceStateID];
+#ifdef THREAD_SAFE
+    env_mutex.unlock();
+#endif
 
     //iterate through actions
     for (aind = 0; aind < EnvNAVXYTHETALATCfg.actionwidth; aind++) {
@@ -2322,11 +2328,17 @@ void EnvironmentNAVXYTHETALAT::GetSuccs(int SourceStateID, vector<int>* SuccIDV,
         int cost = GetActionCost(HashEntry->X, HashEntry->Y, HashEntry->Theta, nav3daction);
         if (cost >= INFINITECOST) continue;
 
-        EnvNAVXYTHETALATHashEntry_t* OutHashEntry;
-        if ((OutHashEntry = (this->*GetHashEntry)(newX, newY, newTheta)) == NULL) {
+#ifdef THREAD_SAFE
+        env_mutex.lock();
+#endif
+        EnvNAVXYTHETALATHashEntry_t* OutHashEntry = (this->*GetHashEntry)(newX, newY, newTheta);
+        if (OutHashEntry == NULL) {
             //have to create a new entry
             OutHashEntry = (this->*CreateNewHashEntry)(newX, newY, newTheta);
         }
+#ifdef THREAD_SAFE
+        env_mutex.unlock();
+#endif
 
         SuccIDV->push_back(OutHashEntry->stateID);
         CostV->push_back(cost);
@@ -2352,7 +2364,13 @@ void EnvironmentNAVXYTHETALAT::GetPreds(int TargetStateID, vector<int>* PredIDV,
 #endif
 
     //get X, Y for the state
+#ifdef THREAD_SAFE
+    env_mutex.lock();
+#endif
     EnvNAVXYTHETALATHashEntry_t* HashEntry = StateID2CoordTable[TargetStateID];
+#ifdef THREAD_SAFE
+    env_mutex.unlock();
+#endif
 
     //clear the successor array
     PredIDV->clear();
@@ -2377,11 +2395,17 @@ void EnvironmentNAVXYTHETALAT::GetPreds(int TargetStateID, vector<int>* PredIDV,
         int cost = GetActionCost(predX, predY, predTheta, nav3daction);
         if (cost >= INFINITECOST) continue;
 
-        EnvNAVXYTHETALATHashEntry_t* OutHashEntry;
-        if ((OutHashEntry = (this->*GetHashEntry)(predX, predY, predTheta)) == NULL) {
+#ifdef THREAD_SAFE
+        env_mutex.lock();
+#endif
+        EnvNAVXYTHETALATHashEntry_t* OutHashEntry = (this->*GetHashEntry)(predX, predY, predTheta);
+        if (OutHashEntry == NULL) {
             //have to create a new entry
             OutHashEntry = (this->*CreateNewHashEntry)(predX, predY, predTheta);
         }
+#ifdef THREAD_SAFE
+        env_mutex.unlock();
+#endif
 
         PredIDV->push_back(OutHashEntry->stateID);
         CostV->push_back(cost);
@@ -2621,8 +2645,14 @@ int EnvironmentNAVXYTHETALAT::GetFromToHeuristic(int FromStateID, int ToStateID)
 #endif
 
     //get X, Y for the state
+#ifdef THREAD_SAFE
+    env_mutex.lock();
+#endif
     EnvNAVXYTHETALATHashEntry_t* FromHashEntry = StateID2CoordTable[FromStateID];
     EnvNAVXYTHETALATHashEntry_t* ToHashEntry = StateID2CoordTable[ToStateID];
+#ifdef THREAD_SAFE
+    env_mutex.unlock();
+#endif
 
     //TODO - check if one of the gridsearches already computed and then use it.
 
@@ -2645,7 +2675,13 @@ int EnvironmentNAVXYTHETALAT::GetGoalHeuristic(int stateID)
     }
 #endif
 
+#ifdef THREAD_SAFE
+    env_mutex.lock();
+#endif
     EnvNAVXYTHETALATHashEntry_t* HashEntry = StateID2CoordTable[stateID];
+#ifdef THREAD_SAFE
+    env_mutex.unlock();
+#endif
     //computes distances from start state that is grid2D, so it is EndX_c EndY_c
     int h2D = grid2Dsearchfromgoal->getlowerboundoncostfromstart_inmm(HashEntry->X, HashEntry->Y); 
     int hEuclid = (int)(NAVXYTHETALAT_COSTMULT_MTOMM * EuclideanDistance_m(HashEntry->X, HashEntry->Y,
@@ -2669,7 +2705,13 @@ int EnvironmentNAVXYTHETALAT::GetStartHeuristic(int stateID)
     }
 #endif
 
+#ifdef THREAD_SAFE
+    env_mutex.lock();
+#endif
     EnvNAVXYTHETALATHashEntry_t* HashEntry = StateID2CoordTable[stateID];
+#ifdef THREAD_SAFE
+    env_mutex.unlock();
+#endif
     int h2D = grid2Dsearchfromstart->getlowerboundoncostfromstart_inmm(HashEntry->X, HashEntry->Y);
     int hEuclid = (int)(NAVXYTHETALAT_COSTMULT_MTOMM * EuclideanDistance_m(EnvNAVXYTHETALATCfg.StartX_c,
                                                                            EnvNAVXYTHETALATCfg.StartY_c, HashEntry->X,
@@ -2711,7 +2753,13 @@ void EnvironmentNAVXYTHETALAT::GetLazySuccs(int SourceStateID, std::vector<int>*
     if (SourceStateID == EnvNAVXYTHETALAT.goalstateid) return;
 
     //get X, Y for the state
+#ifdef THREAD_SAFE
+    env_mutex.lock();
+#endif
     EnvNAVXYTHETALATHashEntry_t* HashEntry = StateID2CoordTable[SourceStateID];
+#ifdef THREAD_SAFE
+    env_mutex.unlock();
+#endif
 
     //iterate through actions
     for (aind = 0; aind < EnvNAVXYTHETALATCfg.actionwidth; aind++) {
@@ -2737,11 +2785,17 @@ void EnvironmentNAVXYTHETALAT::GetLazySuccs(int SourceStateID, std::vector<int>*
         int cost = GetActionCost(HashEntry->X, HashEntry->Y, HashEntry->Theta, nav3daction);
         if (cost >= INFINITECOST) continue;
 
-        EnvNAVXYTHETALATHashEntry_t* OutHashEntry;
-        if ((OutHashEntry = (this->*GetHashEntry)(newX, newY, newTheta)) == NULL) {
+#ifdef THREAD_SAFE
+        env_mutex.lock();
+#endif
+        EnvNAVXYTHETALATHashEntry_t* OutHashEntry = (this->*GetHashEntry)(newX, newY, newTheta);
+        if (OutHashEntry == NULL) {
             //have to create a new entry
             OutHashEntry = (this->*CreateNewHashEntry)(newX, newY, newTheta);
         }
+#ifdef THREAD_SAFE
+        env_mutex.unlock();
+#endif
 
         SuccIDV->push_back(OutHashEntry->stateID);
         CostV->push_back(cost);

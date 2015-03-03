@@ -32,8 +32,14 @@
 
 #include <cstdio>
 #include <vector>
+#include <mutex>
 #include <sbpl/config.h>
 #include <sbpl/sbpl_exception.h>
+
+/**
+ * \brief thread-safe environments
+ */
+#define THREAD_SAFE 1
 
 class CMDPSTATE;
 struct MDPConfig;
@@ -301,6 +307,11 @@ public:
             throw new SBPL_Exception();
         }
     }
+
+protected:
+#ifdef THREAD_SAFE
+    std::mutex env_mutex;
+#endif
 };
 
 #endif

@@ -745,8 +745,14 @@ int EnvironmentNAV2D::GetFromToHeuristic(int FromStateID, int ToStateID)
 #endif
 
     //get X, Y for the state
+#ifdef THREAD_SAFE
+    env_mutex.lock();
+#endif
     EnvNAV2DHashEntry_t* FromHashEntry = EnvNAV2D.StateID2CoordTable[FromStateID];
     EnvNAV2DHashEntry_t* ToHashEntry = EnvNAV2D.StateID2CoordTable[ToStateID];
+#ifdef THREAD_SAFE
+    env_mutex.unlock();
+#endif
 
     return EuclideanDistance(FromHashEntry->X, FromHashEntry->Y, ToHashEntry->X, ToHashEntry->Y);
 }
@@ -893,7 +899,13 @@ void EnvironmentNAV2D::GetSuccs(int SourceStateID, vector<int>* SuccIDV, vector<
     if (SourceStateID == EnvNAV2D.goalstateid) return;
 
     //get X, Y for the state
+#ifdef THREAD_SAFE
+    env_mutex.lock();
+#endif
     EnvNAV2DHashEntry_t* HashEntry = EnvNAV2D.StateID2CoordTable[SourceStateID];
+#ifdef THREAD_SAFE
+    env_mutex.unlock();
+#endif
 
     //iterate through actions
     bool bTestBounds = false;
@@ -934,11 +946,17 @@ void EnvironmentNAV2D::GetSuccs(int SourceStateID, vector<int>* SuccIDV, vector<
         //otherwise compute the actual cost
         int cost = (costmult + 1) * EnvNAV2DCfg.dxy_distance_mm_[aind];
 
-        EnvNAV2DHashEntry_t* OutHashEntry;
-        if ((OutHashEntry = GetHashEntry(newX, newY)) == NULL) {
+#ifdef THREAD_SAFE
+        env_mutex.lock();
+#endif
+        EnvNAV2DHashEntry_t* OutHashEntry = GetHashEntry(newX, newY);
+        if (OutHashEntry == NULL) {
             //have to create a new entry
             OutHashEntry = CreateNewHashEntry(newX, newY);
         }
+#ifdef THREAD_SAFE
+        env_mutex.unlock();
+#endif
 
         SuccIDV->push_back(OutHashEntry->stateID);
         CostV->push_back(cost);
@@ -964,7 +982,13 @@ void EnvironmentNAV2D::GetPreds(int TargetStateID, vector<int>* PredIDV, vector<
     CostV->reserve(EnvNAV2DCfg.numofdirs);
 
     //get X, Y for the state
+#ifdef THREAD_SAFE
+        env_mutex.lock();
+#endif
     EnvNAV2DHashEntry_t* HashEntry = EnvNAV2D.StateID2CoordTable[TargetStateID];
+#ifdef THREAD_SAFE
+        env_mutex.unlock();
+#endif
 
     //no predecessors if obstacle
     if (EnvNAV2DCfg.Grid2D[HashEntry->X][HashEntry->Y] >= EnvNAV2DCfg.obsthresh) return;
@@ -1016,11 +1040,17 @@ void EnvironmentNAV2D::GetPreds(int TargetStateID, vector<int>* PredIDV, vector<
         // actions are undirected to determine the cost)
         int cost = (costmult + 1) * EnvNAV2DCfg.dxy_distance_mm_[aind];
 
-        EnvNAV2DHashEntry_t* OutHashEntry;
-        if ((OutHashEntry = GetHashEntry(predX, predY)) == NULL) {
+#ifdef THREAD_SAFE
+        env_mutex.lock();
+#endif
+        EnvNAV2DHashEntry_t* OutHashEntry = GetHashEntry(predX, predY);
+        if (OutHashEntry == NULL) {
             // have to create a new entry
             OutHashEntry = CreateNewHashEntry(predX, predY);
         }
+#ifdef THREAD_SAFE
+        env_mutex.unlock();
+#endif
 
         PredIDV->push_back(OutHashEntry->stateID);
         CostV->push_back(cost);
