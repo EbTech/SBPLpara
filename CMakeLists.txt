@@ -62,7 +62,7 @@ install(TARGETS sbpl
 	LIBRARY DESTINATION lib)
 
 add_executable(test_sbpl src/test/main.cpp)
-target_link_libraries(test_sbpl sbpl)
+target_link_libraries(test_sbpl sbpl pthread)
 
 add_executable(test_adjacency_list src/test/test_adjacency_list.cpp)
-target_link_libraries(test_adjacency_list sbpl)
+target_link_libraries(test_adjacency_list sbpl pthread)

@@ -46,19 +46,22 @@ double GetTimeSince(const Clock::time_point& ts) {
   return td;
 }
 
+// sentinel state at end of heap
+EPASEState null_state;
 
 //-------------------------------------------------------------------------------------------
 //OPEN list
 myHeap::myHeap(bool* done_flag, DiscreteSpaceInformation* e){
   done = done_flag;
   env = e;
+  blocked = false;
 }
 
 void myHeap::setEps(double e, double w, int cl) {
   epsOpt = e;
   epsBias = w;
   min_edge_cost = cl;
-  if (epsBias < epsOpt)
+  if (epsBias <= epsOpt)
     leeway = (2*epsOpt - epsBias - 1) * min_edge_cost;
   else
   	leeway = (epsOpt - 1) * min_edge_cost;
@@ -69,6 +72,12 @@ inline int myHeap::bound_back(const EPASEState* const sp, const EPASEState* cons
     return s->g + sp->iter->first - s->iter->first + leeway;
   else
     return (s->g + sp->iter->first - s->iter->first)*epsOpt/epsBias + leeway;
+}
+
+int myHeap::f(const EPASEState* const s) const {
+  // TODO: compute start instead of goal heuristic if searching backwards
+  // i.e.: ComputeRootedHeuristic
+  return s->g + epsBias*env->GetGoalHeuristic(s->MDPstate->StateID);
 }
 
 int myHeap::bound(const EPASEState* const s) const {
@@ -86,12 +95,12 @@ int myHeap::bound(const EPASEState* const s) const {
 }
 
 void myHeap::clear(){
-  open.clear(); be.clear(); /*closed.clear();
-  null_state.mask = null_state.x = null_state.y = null_state.gp = 0;
+  open.clear(); be.clear(); //TODO: closed.clear();
+  null_state.mask = null_state.gp = 0;
   null_state.g = INFINITECOST;
   null_state.iter =
-    open.insert(pair<Cost,State*>(f(&null_state),&null_state));
-      be.insert(pair<Cost,State*>(f(&null_state),&null_state));*/
+    open.insert(pair<int,EPASEState*>(INFINITECOST,&null_state));
+      be.insert(pair<int,EPASEState*>(INFINITECOST,&null_state));
 }
 
 bool myHeap::empty() const {
@@ -102,11 +111,10 @@ void myHeap::initIter(EPASEState* const s) const {
   s->iter = open.cend();
 }
 
-void myHeap::insert(EPASEState* const s){
+void myHeap::insert(EPASEState* const s) {
   if (s->iter != open.cend())
     open.erase(s->iter);
-  // TODO: compute start instead of goal heuristic if searching backwards
-  s->iter = open.insert(pair<int,EPASEState*>(s->g + epsBias*env->GetGoalHeuristic(s->MDPstate->StateID), s));
+  s->iter = open.insert(pair<int,EPASEState*>(f(s), s));
 }
 
 void myHeap::removeBE(EPASEState* const s){
@@ -173,7 +181,7 @@ EPASEState* myHeap::remove(int& gb, int& fval) {
   //analyze();
   
   //loop over open list to find a State we can expand
-  if (usable) {
+  if (!blocked) {
     for (multimap<int,EPASEState*>::const_iterator it = open.cbegin(); it != open.cend(); ++it) {
       EPASEState* s = it->second;
       gb = bound(s);
@@ -191,8 +199,17 @@ EPASEState* myHeap::remove(int& gb, int& fval) {
       }
     }
   }
-  usable = false;
+  blocked = true;
   return NULL;
+}
+
+void myHeap::generate(vector<EPASEState*>& vgen) {
+  for (EPASEState* t : vgen) {
+    if (!(t->mask & EPASE_MASK_CLOSED))
+      insert(t);
+  }
+  vgen.clear();
+  blocked = false;
 }
 
 //-------------------------------------------------------------------------------------------
@@ -239,17 +256,6 @@ EPASEPlanner::EPASEPlanner(DiscreteSpaceInformation* environment, bool bSearchFo
   final_eps_planning_time = -1.0;
   num_of_expands_initial_solution = 0;
   final_eps = -1.0;
-  // TODO: push start state
-
-  unique_lock<mutex> lock(the_mutex);
-  //vector<boost::thread*> threads;
-  //vector<pARAState*> being_expanded;
-  planner_ok = true;
-  thread_ids = 0;
-  for(int i=0; i<EPASE_NUM_THREADS; i++){
-    threads.push_back(thread( [=]{astarThread();} ));
-  }
-  main_cond.wait(lock);
 }
 
 EPASEPlanner::~EPASEPlanner() {
@@ -266,27 +272,6 @@ EPASEPlanner::~EPASEPlanner() {
     delete pSearchStateSpace;
   }
   SBPL_FCLOSE(fDeb);
-}
-
-void EPASEPlanner::astarThread() {
-  unique_lock<mutex> thread_lock(the_mutex);
-  int thread_id = thread_ids;
-  thread_ids++;
-  while (true) { // TODO find wakeup condition and then main_cond.notify_one();
-    //the mutex is locked
-      
-    worker_cond.wait(thread_lock);
-    thread_lock.unlock();
-    if (!planner_ok)
-      break;
-    
-    int ret = ImprovePath(thread_id);
-    if (ret >= 0){
-      printf("thread %d: setting the improve_path_result to %d\n",thread_id,ret);
-      improve_path_result = ret;
-    }
-    thread_lock.lock();
-  }
 }
 
 void EPASEPlanner::Initialize_searchinfo(CMDPSTATE* state)
@@ -532,10 +517,43 @@ int EPASEPlanner::GetGVal(int StateID)
 //returns 1 if the solution is found, 0 if the solution does not exist and 2 if it ran out of time
 int EPASEPlanner::ImprovePath(double MaxNumofSecs)
 {
+	/*from the constructor:
+	// TODO: push start state
+  unique_lock<mutex> lock(the_mutex);
+  //vector<boost::thread*> threads;
+  //vector<pARAState*> being_expanded;
+  planner_ok = true;
+  thread_ids = 0;
+  for(int i=0; i<EPASE_NUM_THREADS; i++){
+    threads.push_back(thread( [=]{ImprovePath(params.max_time);} ));
+  }
+  main_cond.wait(lock);
+  */
+
+
+	/*unique_lock<mutex> thread_lock(the_mutex);
+  int thread_id = thread_ids;
+  thread_ids++;
+  while (true) { // TODO find wakeup condition and then main_cond.notify_one();
+    //the mutex is locked
+      
+    worker_cond.wait(thread_lock);
+    thread_lock.unlock();
+    if (!planner_ok)
+      break;
+    
+    int ret = ImprovePath(thread_id);
+    if (ret >= 0){
+      printf("thread %d: setting the improve_path_result to %d\n",thread_id,ret);
+      improve_path_result = ret;
+    }
+    thread_lock.lock();
+  }*/
     int expands, fval, gb;
     EPASEState *state, *searchgoalstate;
     CKey key;
     CKey goalkey;
+    vector<EPASEState*> generatedStates;
 
     expands = 0;
 

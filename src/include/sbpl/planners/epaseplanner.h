@@ -54,6 +54,8 @@
 #define EPASE_INCONS_LIST_ID 0
 
 #define EPASE_NUM_THREADS 4
+//state masks
+#define EPASE_MASK_CLOSED 1
 
 class CList;
 class DiscreteSpaceInformation;
@@ -132,10 +134,11 @@ class myHeap {
     DiscreteSpaceInformation* env;
     double epsOpt, epsBias;
     int min_edge_cost, leeway;
-    bool usable;
+    bool blocked;
   public:
     myHeap(bool* done_flag, DiscreteSpaceInformation* e);
     void setEps(double e, double w, int cl);
+    int f(const EPASEState* const s) const;
     int bound_back(const EPASEState* const sp, const EPASEState* const s) const;
     int bound(const EPASEState* const s) const;
     void clear();
@@ -146,6 +149,7 @@ class myHeap {
     int min_value();
     void analyze();
     EPASEState* remove(int& gb, int& fval);
+    void generate(std::vector<EPASEState*>& vgen);
 
     class DualIterator {
       public:
@@ -282,11 +286,6 @@ class EPASEPlanner : public SBPLPlanner
      * \brief destructor
      */
     ~EPASEPlanner();
-
-    /**
-     * runs a search thread
-     */
-    virtual void astarThread();
 
     /**
      * \brief returns the initial epsilon

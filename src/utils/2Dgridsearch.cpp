@@ -408,7 +408,8 @@ bool SBPL2DGridSearch::search_withheap(unsigned char** Grid2D, unsigned char obs
     else
         largestcomputedoptf_ = INFINITECOST;
 
-    delete[] pbClosed;
+    //delete[] pbClosed;
+    free(pbClosed);
 
     SBPL_PRINTF( "# of expands during 2dgridsearch=%d time=%d msecs 2Dsolcost_inmm=%d "
                 "largestoptfval=%d (start=%d %d goal=%d %d)\n",
