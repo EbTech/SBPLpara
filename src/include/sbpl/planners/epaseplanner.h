@@ -134,8 +134,8 @@ class myHeap {
     DiscreteSpaceInformation* env;
     double epsOpt, epsBias;
     int min_edge_cost, leeway;
-    bool blocked;
   public:
+    bool blocked;
     myHeap(bool* done_flag, DiscreteSpaceInformation* e);
     void setEps(double e, double w, int cl);
     int f(const EPASEState* const s) const;
@@ -373,10 +373,10 @@ class EPASEPlanner : public SBPLPlanner
     virtual void DeleteSearchStateData(EPASEState* state);
 
     //used for backward search
-    virtual void UpdatePreds(EPASEState* state);
+    virtual void UpdatePreds(EPASEState* state, std::vector<EPASEState*>& tbGen);
 
     //used for forward search
-    virtual void UpdateSuccs(EPASEState* state);
+    virtual void UpdateSuccs(EPASEState* state, std::vector<EPASEState*>& tbGen);
 
     virtual int GetGVal(int StateID);
 

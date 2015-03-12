@@ -104,7 +104,7 @@ void myHeap::clear(){
 }
 
 bool myHeap::empty() const {
-  return open.empty();
+  return open.size() <= 1;
 }
 
 void myHeap::initIter(EPASEState* const s) const {
@@ -431,7 +431,7 @@ void EPASEPlanner::DeleteSearchStateData(EPASEState* state)
 }
 
 //used for backward search
-void EPASEPlanner::UpdatePreds(EPASEState* state)
+void EPASEPlanner::UpdatePreds(EPASEState* state, vector<EPASEState*>& tbGen)
 {
     vector<int> PredIDV;
     vector<int> CostV;
@@ -456,7 +456,7 @@ void EPASEPlanner::UpdatePreds(EPASEState* state)
 
             //re-insert into heap if not closed yet
             if (predstate->iterationclosed != pSearchStateSpace->searchiteration) {
-                heap.insert(predstate);
+                tbGen.push_back(predstate);
             }
             //take care of incons list
             else if (predstate->listelem[EPASE_INCONS_LIST_ID] == NULL) {
@@ -467,7 +467,7 @@ void EPASEPlanner::UpdatePreds(EPASEState* state)
 }
 
 //used for forward search
-void EPASEPlanner::UpdateSuccs(EPASEState* state)
+void EPASEPlanner::UpdateSuccs(EPASEState* state, vector<EPASEState*>& tbGen)
 {
     vector<int> SuccIDV;
     vector<int> CostV;
@@ -494,7 +494,7 @@ void EPASEPlanner::UpdateSuccs(EPASEState* state)
 
             //re-insert into heap if not closed yet
             if (succstate->iterationclosed != pSearchStateSpace->searchiteration) {
-                heap.insert(succstate);
+                tbGen.push_back(succstate);
             }
             //take care of incons list
             else if (succstate->listelem[EPASE_INCONS_LIST_ID] == NULL) {
@@ -517,53 +517,23 @@ int EPASEPlanner::GetGVal(int StateID)
 //returns 1 if the solution is found, 0 if the solution does not exist and 2 if it ran out of time
 int EPASEPlanner::ImprovePath(double MaxNumofSecs)
 {
-	/*from the constructor:
-	// TODO: push start state
-  unique_lock<mutex> lock(the_mutex);
-  //vector<boost::thread*> threads;
-  //vector<pARAState*> being_expanded;
-  planner_ok = true;
-  thread_ids = 0;
-  for(int i=0; i<EPASE_NUM_THREADS; i++){
-    threads.push_back(thread( [=]{ImprovePath(params.max_time);} ));
-  }
-  main_cond.wait(lock);
-  */
-
-
-	/*unique_lock<mutex> thread_lock(the_mutex);
-  int thread_id = thread_ids;
-  thread_ids++;
-  while (true) { // TODO find wakeup condition and then main_cond.notify_one();
-    //the mutex is locked
-      
-    worker_cond.wait(thread_lock);
-    thread_lock.unlock();
-    if (!planner_ok)
-      break;
-    
-    int ret = ImprovePath(thread_id);
-    if (ret >= 0){
-      printf("thread %d: setting the improve_path_result to %d\n",thread_id,ret);
-      improve_path_result = ret;
-    }
-    thread_lock.lock();
-  }*/
-    int expands, fval, gb;
+	int expands, fval, gb, thread_id;
     EPASEState *state, *searchgoalstate;
     CKey key;
     CKey goalkey;
-    vector<EPASEState*> generatedStates;
+    vector<EPASEState*> toBeGenerated;
 
     expands = 0;
-
     if (pSearchStateSpace->searchgoalstate == NULL) {
         SBPL_ERROR("ERROR searching: no goal state is set\n");
         throw new SBPL_Exception();
     }
-
-    //goal state
     searchgoalstate = (EPASEState*)(pSearchStateSpace->searchgoalstate->PlannerSpecificData);
+    
+    unique_lock<mutex> thread_lock(the_mutex);
+    thread_id = thread_ids++;
+    
+    //goal state
     if (searchgoalstate->callnumberaccessed != pSearchStateSpace->callnumber) {
         ReInitializeSearchStateInfo(searchgoalstate);
     }
@@ -576,17 +546,26 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
     /* TODO remove?: minkey = heap.remove(gb, fval);
     CKey oldkey = minkey;*/
     while (/* TODO: termination condition on bound(goal) */
-        	GetTimeSince(timeStarted) < MaxNumofSecs &&
+        	GetTimeSince(timeStarted) < MaxNumofSecs && planner_ok &&
             (pSearchStateSpace->eps_satisfied == INFINITECOST || GetTimeSince(timeStarted) < repair_time) &&
             (state = heap.remove(gb, fval)) != NULL)
     {
-		/* TODO remove?:
-		EPASEState* state = heap.remove(&lock, &fval,thread_id);
-		if(state==NULL){
-			printf("thread %d: heap remove returned NULL\n",thread_id);
-			break;
+		if (state == NULL) {
+			worker_cond.wait(thread_lock, [&]{return !heap.blocked;});
+			continue;
 		}
-    */
+
+#if DEBUG
+		if (state->mask & EPASE_MASK_CLOSED) {
+			SBPL_FPRINTF(fDeb, "ERROR: closed state is being expanded\n");
+            throw new SBPL_Exception();
+		}
+#endif
+    	state->mask |= EPASE_MASK_CLOSED;
+
+    	// we are done with the heap, so pass the lock to another thread
+    	thread_lock.unlock();
+    	worker_cond.notify_one();
 
 #if DEBUG
         SBPL_FPRINTF(fDeb, "expanding state(%d): h=%d g=%u key=%u v=%u iterc=%d callnuma=%d expands=%d (g(goal)=%u)\n",
@@ -616,8 +595,8 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
 		if (goal_state->g <= (unsigned int)fval) {
 			// TODO: printf("thread %d: goal g-val is less than min fval\n",thread_id);
 			iteration_done = true;
+			main_cond.notify_one();
 			return 1;
-			break;
 		}
 
         if (state->v == state->g) {
@@ -627,8 +606,6 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
             throw new SBPL_Exception();
 #endif
         }
-
-        heap.removeBE(state);
 
         //recompute state value
         state->v = state->g;
@@ -665,9 +642,9 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
     // TODO: lock.unlock();
 
         if (bforwardsearch)
-            UpdateSuccs(state);
+            UpdateSuccs(state, toBeGenerated);
         else
-            UpdatePreds(state);
+            UpdatePreds(state, toBeGenerated);
 
         //recompute minkey
         // TODO remove?: minkey = heap.getminkeyheap();
@@ -683,6 +660,11 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
         if (expands % 100000 == 0 && expands > 0) {
             SBPL_PRINTF("expands so far=%u\n", expands);
         }
+
+        // reclaim lock and clean up for the next iteration
+        thread_lock.lock();
+        heap.generate(toBeGenerated);
+        heap.removeBE(state);
     }
 
     int retv = 1;
@@ -707,6 +689,9 @@ int EPASEPlanner::ImprovePath(double MaxNumofSecs)
     //SBPL_FPRINTF(fDeb, "expanded=%d\n", expands);
 
     searchexpands += expands;
+
+    // TODO: is this the right time to wake up the main thread?
+    main_cond.notify_one();
 
     return retv;
 }
@@ -1206,9 +1191,24 @@ bool EPASEPlanner::Search(vector<int>& pathIds, int & PathCost, bool bFirstSolut
         if (pSearchStateSpace->bReevaluatefvals)
             Reevaluatefvals();
 
-        //improve or compute path
-        if (ImprovePath(MaxNumofSecs) == 1) {
-            pSearchStateSpace->eps_satisfied = pSearchStateSpace->eps;
+        mutex main_mutex;
+        unique_lock<mutex> main_lock(main_mutex);
+        thread threads[EPASE_NUM_THREADS];
+        int improve_path_result[EPASE_NUM_THREADS];
+        planner_ok = true;
+        thread_ids = 0;
+        for(int i=0; i<EPASE_NUM_THREADS; ++i) {
+            threads[i] = thread( [&]{
+            	int ret = ImprovePath(MaxNumofSecs);
+            	printf("thread %d: setting the improve_path_result to %d\n",i,ret);
+            	if (ret == 1)
+            		pSearchStateSpace->eps_satisfied = pSearchStateSpace->eps;
+            } );
+        }
+        main_cond.wait(main_lock);
+        // main_cond.wait(main_lock, []{return search_done;});
+        for (thread& th : threads) {
+            th.join();
         }
 
         //print the solution cost and eps bound
